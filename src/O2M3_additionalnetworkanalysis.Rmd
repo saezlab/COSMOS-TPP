@@ -1,0 +1,1030 @@
+---
+title: "O2M3: additional network analysis"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    theme: united
+    code_folding: hide
+---
+
+This script summariyes efforts performed to analzye the role of TPP proteins in COSMOS networks. We saw that the processes in the overall network reflect our expectations (DDR). Here, we move on to a more granular view, by analyzing processes on cluster level.
+
+# General settings
+
+
+```{r setup}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  include = TRUE,
+  cache = TRUE,
+  cache.lazy = FALSE,
+  eval = TRUE,
+  fig.width = 7 * (1 + sqrt(5)) / 2, fig.height = 7
+)
+knitr::opts_knit$set(root.dir = "/Users/miraburtscher/Documents/Bioquant/COSMOS-TPP_paper/")
+```
+
+## Packages
+
+```{r, message=F, warning =F}
+library(tidyverse)
+library(igraph)
+library("reshape2")
+library(OmnipathR)
+library(xlsx)
+library(viridis)
+library(ggrepel)
+options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(visNetwork)
+library(knitr)
+library(ggpubr)
+library(NetworkDistance)
+library(Rcpp)
+library(RColorBrewer)
+library(networkD3)
+library(kableExtra)
+library(ReactomePA)
+library(clusterProfiler)
+library(ggraph)
+library(reactome.db)
+library(ggvenn)
+
+mutate <- dplyr::mutate
+select <- dplyr::select
+group_by <- dplyr::group_by
+```
+
+## Functions
+
+Enrichment functions for GO and RPA enrichments
+
+```{r}
+GSE_RPA <- function(geneList, universe) {
+  geneList <- mapIds(org.Hs.eg.db, geneList, "ENTREZID", "SYMBOL")
+  universe <- mapIds(org.Hs.eg.db, universe, "ENTREZID", "SYMBOL")
+  pathway_enrichment <- enrichPathway(
+    gene = geneList,
+    organism = "human",
+    pvalueCutoff = 1,
+    pAdjustMethod = "BH",
+    qvalueCutoff = 1,
+    universe = universe,
+    minGSSize = 5,
+    maxGSSize = 500,
+    readable = TRUE
+  )
+}
+
+GSE_MF <- function(geneList, universe, ont) {
+  geneList <- mapIds(org.Hs.eg.db, geneList, "ENTREZID", "SYMBOL")
+  universe <- mapIds(org.Hs.eg.db, universe, "ENTREZID", "SYMBOL")
+  pathway_enrichment <- clusterProfiler::enrichGO(
+    gene = geneList,
+    ont = ont,
+    OrgDb = "org.Hs.eg.db",
+    pvalueCutoff = 1,
+    pAdjustMethod = "BH",
+    qvalueCutoff = 1,
+    universe = universe,
+    minGSSize = 5,
+    maxGSSize = 500,
+    readable = TRUE
+  )
+}
+```
+
+```{r, eval =F}
+#' Helper function to perform a set enrichment test.
+#'
+#' The function calculates an enrichment test for a list of genes against
+#' some gene sets using a hyper-geometric test (Fisher's exaxt test).
+#'
+#' @param genelist vector of IDs (e.g. Entrez gene IDs)
+#' @param sets list with gene sets (must be the same IDs as in genelist)
+#' @param universe the universe (background list) of IDs. If missing,
+#'                 the non-redudant union of all sets is used as universe.
+#' @param restrict_universe boolean indicating whether the universe should
+#'                          be restricted to only genes also present in the
+#'                          the gene sets (TRUE) or used as provided (FALSE).
+#'                          Default to FALSE.
+#' @param alternative the test alternative for the set test, either
+#'                    "greater" (default) or "less".
+#' @param min_n_sig_set the minimal number of significant proteins/genes
+#'                      in a set in order for the set to be tested. Please
+#'                      note, that filtering is applied after the adjusted
+#'                      p-values are calculated.
+#' @param padj_method the method for p-value adjustment for the sets of
+#'                    one ontology. Default to "BH".
+#' @param verbose if TRUE print additional messages, default to FALSE
+#'
+#' @return a tibble with the test results:
+#'         - set_name: the name of the set (e.g. name of the pathway),
+#'         - n_sig number of IDs (genes/proteins) in the gene list
+#'         - n_set number of IDs (gene/proteins) in the set
+#'         - n_sig_set the number of IDs from the input list (e.g. sign. genes) in the set
+#'         - n_universe number of IDs in the universe (background list)
+#'         - p the hyper-geometrical p-value,
+#'         - padj the adjusted p-value
+#'         - sig_set a list column holding the overlap of IDs in the input list and the set
+#'
+#'         If the gene list and the given sets do not overlap or none of the
+#'         sets contain at least \code{min_n_sig_set} genes from the gene
+#'         list the function returns NULL.
+#'
+#' @importFrom magrittr "%>%"
+#' @importFrom tibble tibble
+#' @importFrom dplyr filter select mutate
+#' @importFrom stats phyper
+#' @export
+#'
+#' @note For efficiency reasons the function uses \code{phyper} instead of
+#'       \code{fisher.test}.
+#'
+#' @rdname set_enrichment
+#' @author Stephan Gade
+enrich_test <- function(genelist, sets, universe = NULL,
+                        restrict_universe = FALSE,
+                        alternative = c("greater", "less"),
+                        min_n_sig_set = 2,
+                        padj_method = "BH",
+                        verbose = F) {
+
+  alternative <- match.arg(alternative)
+
+
+  g1 <- length(genelist)
+  total <- length(universe)
+
+  res <- lapply(
+    sets,
+    function(set) {
+
+      g2 <- length(intersect(set, universe))
+      overlap <- length(intersect(genelist, set))
+
+      p <- switch(alternative,
+                  "greater" = phyper(overlap - 1, g2, total - g2, g1,
+                                     lower.tail = F),
+                  "less" = phyper(overlap, g2, total - g2, g1,
+                                  lower.tail = T))
+
+      tibble(
+        n_sig = g1, n_set = g2,
+        n_sig_set = overlap,
+        n_universe = total,
+        P.Value = p,
+        sig_set = list(intersect(genelist, set))
+      )
+    }
+  )
+
+  res <- do.call("rbind", res) %>%
+    mutate(set_name = rep(names(res), sapply(res, nrow)))
+
+  res <- res %>%
+    mutate(adj.P.Val = p.adjust(P.Value, method = padj_method)) %>%
+    dplyr::select(
+      set_name, n_sig, n_set, n_sig_set, n_universe,
+      P.Value, adj.P.Val, sig_set
+    )
+
+  if (!is.null(min_n_sig_set)) {
+    res <- res %>%
+      filter(n_sig_set >= min_n_sig_set)
+  }
+
+  attr(res, "alternative") <- alternative
+
+  res
+}
+
+```
+
+
+```{r, eval = F}
+load("data/TEDDY_geneSets.ro")
+sets <- TEDDY_geneSets$REACTOME
+
+
+test = enrich_test(genelist = c("ATM", "ATR", "CDK1", "CHEK2"),
+                   sets = sets, 
+                   universe = unique(PKN_annotated$GeneA),
+                        restrict_universe = FALSE,
+                        alternative = "greater",
+                        min_n_sig_set = 2,
+                        padj_method = "BH",
+                        verbose = F)
+```
+
+
+
+## PKN data
+
+```{r}
+load("data/KSN.RData")
+load("data/dorothea.RData")
+
+PKN_annotated <- read_tsv("data/GSK_Causal_Network_032021_Annotation.txt", show_col_types = FALSE)
+```
+
+## Viper results
+
+```{r}
+load("data/210802_viper_footprints.RData")
+viper_kinases <- viperRes_phospho_corrected %>%
+  filter(condition_long == "BRCA_nul_24h_4_Ola") %>%
+  arrange(desc(absNES)) %>%
+  slice_head(n = 30) %>%
+  mutate(measured = ifelse(NES < 0, "inactive", "active"), type = "Kinase", node = regulator) %>%
+  select(id = regulator, node, measured, type)
+```
+
+## Reactome terms
+
+```{r}
+pathwaymembers <- toTable(reactomePATHID2EXTID) %>%
+  mutate(gene_name = mapIds(org.Hs.eg.db, gene_id, "SYMBOL", "ENTREZID"))
+
+pathway_names <- toTable(reactomePATHID2NAME) %>%
+  filter(grepl("Homo sapiens", path_name))
+
+DDR <- pathway_names %>%
+  filter(grepl("DNA Damage|DNA damage|DNA Repair|DNA repair|Checkpoint", path_name))
+
+DDR_members <- pathwaymembers %>%
+  filter(DB_ID %in% DDR$DB_ID) %>%
+  distinct(gene_name)
+
+interferon <- pathway_names %>%
+  filter(grepl("Interferon|interferon", path_name))
+
+INF_members <- pathwaymembers %>%
+  filter(DB_ID %in% interferon$DB_ID) %>%
+  distinct(gene_name)
+
+YAP <- pathway_names %>%
+  filter(grepl("YAP|TEAD", path_name))
+
+YAP_members <- pathwaymembers %>%
+  filter(DB_ID %in% YAP$DB_ID) %>%
+  distinct(gene_name)
+
+cell_cycle <- pathway_names %>%
+  filter(grepl("Cell cycle|cell cycle|APC|mitotic", path_name))
+
+cc_members <- pathwaymembers %>%
+  filter(DB_ID %in% cell_cycle$DB_ID) %>%
+  distinct(gene_name)
+
+AP2 <- pathway_names %>%
+  filter(grepl("TFAP", path_name))
+
+AP2_members <- pathwaymembers %>%
+  filter(DB_ID %in% AP2$DB_ID) %>%
+  distinct(gene_name)
+```
+
+# Load and process networks 
+
+```{r}
+load("data/2022_02_17_MasterThesis_networks.RData")
+```
+
+```{r}
+nodes <- map_dfr(result_list, "nodes", .id = "networkID") %>%
+  dplyr::select(networkID, label, measured)
+
+nodes <- map_dfr(network_list, "overall_node_summary", .id = "networkID") %>%
+  separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F) %>%
+  left_join(nodes, by = c("networkID", "node" = "label")) %>%
+  mutate(
+    model = gsub("input", "input node modelled", model),
+    model = gsub("missed", "input node not modelled", model),
+    model = gsub("additional", "PKN node", model),
+    id = node
+  )
+
+edges <- map_dfr(result_list, "combined_network", .id = "networkID") %>%
+  mutate(edge_combined = paste(from, sign, to, sep = "_")) %>%
+  distinct(networkID, edge_combined, .keep_all = T) %>%
+  separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F)
+
+centralities <- map_dfr(network_list, 'node_degrees', .id = "networkID") %>%
+  left_join(nodes, by = c("Node"= "node", "networkID"))
+```
+
+Extract F-statistic results and results without TPP
+
+```{r}
+F_stat_edges <- filter(edges, TPP_set == "Fstatistic") %>%
+  distinct(edge_combined, .keep_all = T)
+
+F_stat_nodes <- data.frame(id = unique(c(F_stat_edges$from, F_stat_edges$to))) %>%
+  left_join(distinct(nodes, id, .keep_all = T)) %>%
+  mutate(group = paste(type, measured, sep = "_"))
+
+F_stat_nodes <- nodes %>%
+  filter(TPP_set == "Fstatistic" & model != "input node not modelled" & measured != "not available") %>%
+  distinct(id, .keep_all = T) %>%
+  mutate(group = paste(type, measured, sep = "_"))
+
+# annotate with footprinting information 
+F_stat_nodes <- bind_rows(
+  filter(viper_kinases, id %in% F_stat_nodes$id) %>% mutate(model = "input node modelled"),
+  F_stat_nodes
+) %>%
+  distinct(id, .keep_all = T) %>%
+  mutate(group = paste(type, measured, sep = "_"))
+
+
+noTPP_edges <- filter(edges, TPP_set == "noTPP") %>%
+  distinct(edge_combined, .keep_all = T)
+
+noTPP_nodes <- data.frame(id = unique(c(noTPP_edges$from, noTPP_edges$to))) %>%
+  left_join(distinct(nodes, id, .keep_all = T)) %>%
+  mutate(group = paste(type, measured, sep = "_"))
+```
+
+## Enrichment
+
+```{r}
+library(ggforce)
+nodes_processes <- centralities %>%
+  filter(TPP_set %in% c("Fstatistic", "noTPP") & model != "input node not modelled" & measured != "not available") %>%
+  mutate(group = paste(type, measured, sep = "_")) %>% 
+  group_by(TPP_set, Node, PKN) %>% 
+  mutate(n_occ = n()) %>% 
+  select(Node, TPP_set, degree, n_occ, PKN, replicate) %>% 
+  mutate(process = ifelse(Node %in% c(DDR_members$gene_name, cc_members$gene_name), "DDR and cc", "else"))
+
+ggplot(nodes_processes, aes(x = process, y = n_occ, colour = TPP_set)) +
+  geom_violin(alpha = 0.3) +
+  geom_sina() + 
+  stat_compare_means(aes(group = TPP_set), method = "wilcox.test",
+                     label.y = 7, label = "p.signif", size =6) +
+  theme_bw(base_size = 18) +
+  facet_grid(~PKN)
+```
+
+
+## Network plots
+
+```{r}
+set.seed(1)
+p <- visNetwork(F_stat_nodes, F_stat_edges) %>%
+  visGroups(groupname = "TPP_active", color = "mediumseagreen") %>%
+  visGroups(groupname = "TPP_inactive", color = "palegreen") %>%
+  visGroups(groupname = "TF_active", color = "#8b0a50") %>%
+  visGroups(groupname = "TF_inactive", color = "palevioletred") %>%
+  visGroups(groupname = "Kinase_active", color = "darkcyan") %>%
+  visGroups(groupname = "Kinase_inactive", color = "mediumturquoise") %>%
+  visGroups(groupname = "other_active", color = "burlywood") %>%
+  visGroups(groupname = "other_inactive", color = "wheat") %>%
+  # standard options
+  visEdges(arrows = "to", color = "dimgrey", width = 2) %>%
+  visNodes(font = "30px arial black bold") %>%
+  visLegend() %>%
+  visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+  visNetwork::visIgraphLayout(layout = "layout_with_kk")
+p
+
+set.seed(1)
+p <- visNetwork(noTPP_nodes, noTPP_edges) %>%
+  visGroups(groupname = "TPP_active", color = "mediumseagreen") %>%
+  visGroups(groupname = "TPP_inactive", color = "palegreen") %>%
+  visGroups(groupname = "TF_active", color = "#8b0a50") %>%
+  visGroups(groupname = "TF_inactive", color = "palevioletred") %>%
+  visGroups(groupname = "Kinase_active", color = "darkcyan") %>%
+  visGroups(groupname = "Kinase_inactive", color = "mediumturquoise") %>%
+  visGroups(groupname = "other_active", color = "burlywood") %>%
+  visGroups(groupname = "other_inactive", color = "wheat") %>%
+  # standard options
+  visEdges(arrows = "to", color = "dimgrey", width = 2) %>%
+  visNodes(font = "30px arial black bold") %>%
+  visLegend() %>%
+  visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+  visNetwork::visIgraphLayout(layout = "layout_with_kk")
+p
+```
+
+
+# F statistic cluster analysis
+
+Cluster network and annotate nodes with cluster information
+
+```{r}
+graph_Fstat <- F_stat_edges %>%
+  select(from, to, sign) %>%
+  distinct(from, to, .keep_all = T) %>%
+  graph_from_data_frame()
+
+graph_UD <- as.undirected(graph_Fstat, mode = "collapse")
+cfg <- igraph::cluster_fast_greedy(graph_UD)
+
+n_clusters_Fstat <- length(unique(cfg$membership))
+n_clusters_Fstat
+
+clusters_Fstat <- data.frame(node = cfg$names, cluster = cfg$membership)
+
+F_stat_nodes <- F_stat_nodes %>%
+  left_join(clusters_Fstat, by = "node") %>%
+  mutate(cluster = as.factor(cluster))
+```
+
+```{r , fig.width=10, fig.height=7}
+pal <- c(
+  "1" = "#b68c47",
+  "2" = "#934ac0",
+  "3" = "#71b448",
+  "4" = "#af5179",
+  "5" = "#558965",
+  "6" = "#bb4b37",
+  "7" = "#6d7ab3"
+)
+
+pal <- c(
+  "1" = "#EE7733",
+  "2" = "#0077BB",
+  "3" = "#33BBEE",
+  "4" = "#EE3377",
+  "5" = "#CC3311",
+  "6" = "#009988",
+  "7" = "#BBBBBB"
+)
+
+target <- clusters_Fstat$node
+F_stat_nodes <- F_stat_nodes[match(target, F_stat_nodes$id), ]
+
+set.seed(4)
+p <- ggraph(graph_Fstat, layout = "fr") +
+  geom_edge_link(
+    colour = "grey50",
+    end_cap = circle(3, "mm"),
+    start_cap = circle(3, "mm")
+  ) +
+  geom_node_point(aes(colour = F_stat_nodes$cluster), size = 6) +
+  #geom_node_text(aes(label = F_stat_nodes$id), size = 2.5) +
+  scale_colour_manual(values = pal) +
+  theme_graph() +
+  theme(legend.position = "right")
+p
+```
+
+## Cluster level enrichment
+
+```{r}
+# PKN as universe
+universe <- unique(c(PKN_annotated$GeneA, PKN_annotated$GeneB))
+
+pathwayenrichment_cluster <- F_stat_nodes %>%
+  group_by(cluster) %>%
+  mutate(enrichment = list(as.data.frame(GSE_RPA(
+    geneList = id,
+    universe = universe
+  ))))
+
+pathway_enrichment_unnest_Fstat <- pathwayenrichment_cluster %>%
+  distinct(cluster, enrichment) %>%
+  unnest()
+```
+
+Extract top pathways per cluster
+
+```{r}
+pathway_enrichment_top3cluster <- pathway_enrichment_unnest_Fstat %>%
+  filter(Count > 2) %>%
+  ungroup() %>%
+  mutate(corr_p_value = -log10(p.adjust)) %>%
+  group_by(cluster) %>%
+  dplyr::arrange(cluster, desc(corr_p_value), desc(Count)) %>%
+  slice_head(n = 3) %>%
+  # rip apart labels for better visualization
+  mutate(id = letters[row_number()], clusterID = paste(cluster, id, sep = "_")) %>%
+  ungroup() %>%
+  mutate(cluster = as.factor(cluster), label = gsub("(.{25})", "\\1-\n", Description))
+
+pathway_nodes <- data.frame(
+  from = pathway_enrichment_top3cluster$cluster,
+  to = pathway_enrichment_top3cluster$clusterID
+)
+
+# simplify graph to cluster level information
+V(graph_Fstat)$name <- F_stat_nodes$cluster
+g_cont <- contract(graph_Fstat, membership(cfg), vertex.attr.comb = toString)
+
+g_simp <- as_data_frame(igraph::simplify(g_cont)) %>%
+  mutate(from = gsub(",.*$", "", from), to = gsub(",.*$", "", to)) %>%
+  bind_rows(pathway_nodes) %>%
+  graph_from_data_frame()
+```
+
+```{r}
+pathway_enrichment_topcluster <- pathway_enrichment_unnest_Fstat %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(corr_p_value = -log10(p.adjust)) %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::arrange(cluster, desc(corr_p_value), desc(Count)) %>%
+  dplyr::slice_head(n = 1)
+
+pathway_enrichment_topcluster %>% select(cluster, Description, qvalue)
+```
+
+
+```{r , fig.width=15, fig.height=10}
+nodes <- data.frame(
+  clusterID = V(g_simp)$name,
+  cluster = gsub("_.*$", "", V(g_simp)$name)
+) %>%
+  left_join(pathway_enrichment_top3cluster, by = c("clusterID" = "clusterID")) %>%
+  mutate(
+    cluster.x = factor(cluster.x, levels = seq(1:max(n_clusters_Fstat))),
+    label = ifelse(is.na(label), cluster.x, label),
+    size = degree(g_simp),
+    colour = ifelse(grepl("_", clusterID), "background", label)
+  )
+```
+
+
+```{r , fig.width=15, fig.height=10}
+pal <- c(
+  "1" = "#b68c47",
+  "2" = "#934ac0",
+  "3" = "#71b448",
+  "4" = "#af5179",
+  "5" = "#558965",
+  "6" = "#bb4b37",
+  "7" = "#6d7ab3",
+  "background" = "grey"
+)
+set.seed(2)
+p <- ggraph(g_simp, layout = "fr") +
+  geom_edge_link(colour = "grey") +
+  geom_node_point(aes(size = nodes$size, colour = nodes$colour)) +
+  geom_node_text(aes(label = nodes$label)) +
+  scale_colour_manual(values = pal) +
+  theme_graph() +
+  theme(legend.position = "none")
+p
+```
+
+
+## Processes in detail 
+
+Analyze the processes identified by the cluster level analysis in detail.
+
+```{r}
+for (i in list(
+  AP2_members$gene_name,
+  cc_members$gene_name,
+  YAP_members$gene_name,
+  INF_members$gene_name,
+  DDR_members$gene_name
+)) {
+  interesting_nodes <- F_stat_nodes %>%
+    filter(id %in% i)
+
+  interesting_edges <- F_stat_edges %>%
+    filter(from %in% interesting_nodes$id | to %in% interesting_nodes$id)
+
+  occurences <- table(c(interesting_edges$from, interesting_edges$to))
+
+  interesting_nodes <- F_stat_nodes %>%
+    filter(id %in% unique(c(interesting_edges$from, interesting_edges$to))) %>%
+    mutate(
+      group = ifelse(id %in% i | type == "TPP", group, "background"),
+      size = ifelse(id %in% i, 35, 10),
+      # bigger nodes for pathway nodes
+      shape = ifelse(id %in% i, "circle", "dot")
+    ) %>%
+    rowwise() %>%
+    # make network extract smaller and better readable by reomving nodes with only one edge
+    filter(id %in% i | occurences[[id]] > 1)
+
+  set.seed(1)
+  p <- visNetwork(interesting_nodes, interesting_edges) %>%
+    visGroups(groupname = "TPP_active", color = "mediumseagreen") %>%
+    visGroups(groupname = "TPP_inactive", color = "palegreen") %>%
+    visGroups(groupname = "TF_active", color = "#8b0a50") %>%
+    visGroups(groupname = "TF_inactive", color = "palevioletred") %>%
+    visGroups(groupname = "Kinase_active", color = "darkcyan") %>%
+    visGroups(groupname = "Kinase_inactive", color = "mediumturquoise") %>%
+    visGroups(groupname = "other_active", color = "burlywood") %>%
+    visGroups(groupname = "other_inactive", color = "wheat") %>%
+    visGroups(groupname = "background", color = "gainsboro") %>%
+    # standard options
+    visEdges(arrows = "to", color = "dimgrey", width = 4) %>%
+    visNodes(font = "30px arial black bold") %>%
+    visLegend() %>%
+    visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+    visNetwork::visIgraphLayout(layout = "layout_with_fr")
+  print(p)
+}
+```
+
+
+```{r}
+for (i in list(
+  AP2_members$gene_name,
+  YAP_members$gene_name,
+  INF_members$gene_name,
+  c(DDR_members$gene_name, cc_members$gene_name)
+)) {
+  
+  interesting_nodes <- F_stat_nodes %>%
+    filter(id %in% i)
+
+  interesting_edges <- F_stat_edges %>%
+    filter(from %in% interesting_nodes$id | to %in% interesting_nodes$id) %>% 
+    mutate(color = ifelse(from %in% interesting_nodes$id & to %in% interesting_nodes$id, "grey", "grey")) %>% 
+    distinct(from, to, .keep_all=T)
+
+  occurences <- table(c(interesting_edges$from, interesting_edges$to))
+
+  interesting_nodes <- F_stat_nodes %>%
+    filter(id %in% unique(c(interesting_edges$from, interesting_edges$to))) %>%
+    mutate(
+      group = ifelse(model == "PKN node", "related", "pathway"),
+      size = ifelse(type == "TPP", 35, 20),
+      # bigger nodes for pathway nodes
+      shape = ifelse(type == "TPP", "star", "dot"),
+      label = str_pad(node, max(nchar(node)), side="both", pad=" ")
+    ) %>%
+    rowwise() %>%
+    # make network extract smaller and better readable by reomving nodes with only one edge
+    filter(id %in% i | occurences[[id]] > 1)
+
+  set.seed(1)
+  p <- visNetwork(interesting_nodes, interesting_edges) %>%
+     visGroups(groupname = "pathway", color = "darkred") %>%
+      visGroups(groupname = "related", color = "grey") %>%
+    # visGroups(groupname = "TF_active", color = "#8b0a50") %>%
+    # visGroups(groupname = "TF_inactive", color = "palevioletred") %>%
+    # visGroups(groupname = "Kinase_active", color = "darkcyan") %>%
+    # visGroups(groupname = "Kinase_inactive", color = "mediumturquoise") %>%
+    # visGroups(groupname = "other_active", color = "burlywood") %>%
+    # visGroups(groupname = "other_inactive", color = "wheat") %>%
+    # visGroups(groupname = "background", color = "gainsboro") %>%
+    # standard options
+    visEdges(arrows = "to", width = 4) %>%
+    visNodes(font = "40px arial black bold") %>%
+    visLegend() %>%
+    visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+    visNetwork::visIgraphLayout(layout = "layout_with_fr")
+  print(p)
+}
+```
+
+
+
+
+# noTPP cluster analysis
+
+Cluster network and annotate nodes with cluster information
+
+```{r}
+graph_noTPP <- noTPP_edges %>%
+  select(from, to, sign) %>%
+  distinct(from, to, .keep_all = T) %>%
+  graph_from_data_frame()
+
+graph_UD <- as.undirected(graph_noTPP, mode = "collapse")
+cfg <- igraph::cluster_fast_greedy(graph_UD)
+
+n_clusters_noTPP <- length(unique(cfg$membership))
+n_clusters_noTPP
+
+clusters_noTPP <- data.frame(node = cfg$names, cluster = cfg$membership)
+
+noTPP_nodes <- noTPP_nodes %>%
+  left_join(clusters_noTPP, by = "node") %>%
+  mutate(cluster = as.factor(cluster))
+```
+
+```{r , fig.width=15, fig.height=10}
+pal <- c(
+  "1" = "#b68c47",
+  "2" = "#934ac0",
+  "3" = "#71b448",
+  "4" = "#af5179",
+  "5" = "#558965",
+  "6" = "#bb4b37",
+  "7" = "#6d7ab3",
+  "8" = "darkgrey"
+)
+
+target <- clusters_noTPP$node
+noTPP_nodes <- noTPP_nodes[match(target, noTPP_nodes$id), ]
+
+set.seed(4)
+p <- ggraph(graph_noTPP, layout = "fr") +
+  geom_edge_link(
+    colour = "grey50",
+    end_cap = circle(3, "mm"),
+    start_cap = circle(3, "mm")
+  ) +
+  geom_node_point(aes(colour = noTPP_nodes$cluster), size = 6) +
+  geom_node_text(aes(label = noTPP_nodes$id), size = 2.5) +
+  scale_colour_manual(values = pal) +
+  theme_graph() +
+  theme(legend.position = "right")
+p
+```
+
+## Cluster level enrichment
+
+Check how clusters of noTPP networks compare to the insights in networks with TPP.
+
+```{r}
+# PKN as universe
+universe <- unique(c(PKN_annotated$GeneA, PKN_annotated$GeneB))
+
+pathwayenrichment_cluster <- noTPP_nodes %>%
+  group_by(cluster) %>%
+  mutate(enrichment = list(as.data.frame(GSE_RPA(
+    geneList = id,
+    universe = universe
+  ))))
+
+pathway_enrichment_unnest_noTPP <- pathwayenrichment_cluster %>%
+  distinct(cluster, enrichment) %>%
+  unnest()
+```
+
+Extract top pathways per cluster
+
+```{r}
+pathway_enrichment_top3cluster <- pathway_enrichment_unnest_noTPP %>%
+  filter(Count > 2) %>%
+  ungroup() %>%
+  mutate(corr_p_value = -log10(p.adjust)) %>%
+  group_by(cluster) %>%
+  dplyr::arrange(cluster, desc(corr_p_value), desc(Count)) %>%
+  slice_head(n = 3) %>%
+  # rip apart labels for better visualization
+  mutate(id = letters[row_number()], clusterID = paste(cluster, id, sep = "_")) %>%
+  ungroup() %>%
+  mutate(cluster = as.factor(cluster), label = gsub("(.{25})", "\\1-\n", Description))
+
+pathway_nodes <- data.frame(
+  from = pathway_enrichment_top3cluster$cluster,
+  to = pathway_enrichment_top3cluster$clusterID
+)
+
+# simplify graph to cluster level information
+V(graph_noTPP)$name <- noTPP_nodes$cluster
+g_cont <- contract(graph_noTPP, membership(cfg), vertex.attr.comb = toString)
+
+g_simp <- as_data_frame(igraph::simplify(g_cont)) %>%
+  mutate(from = gsub(",.*$", "", from), to = gsub(",.*$", "", to)) %>%
+  bind_rows(pathway_nodes) %>%
+  graph_from_data_frame()
+```
+
+```{r}
+pathway_enrichment_topcluster <- pathway_enrichment_unnest_noTPP %>%
+  ungroup() %>%
+  mutate(corr_p_value = -log10(p.adjust)) %>%
+  group_by(cluster) %>%
+  dplyr::arrange(cluster, desc(corr_p_value), desc(Count)) %>%
+  slice_head(n = 1)
+
+pathway_enrichment_topcluster %>% select(cluster, Description, qvalue)
+```
+
+
+```{r , fig.width=15, fig.height=10}
+nodes <- data.frame(
+  clusterID = V(g_simp)$name,
+  cluster = gsub("_.*$", "", V(g_simp)$name)
+) %>%
+  left_join(pathway_enrichment_top3cluster, by = c("clusterID" = "clusterID")) %>%
+  mutate(
+    cluster.x = factor(cluster.x, levels = seq(1:max(n_clusters_noTPP))),
+    label = ifelse(is.na(label), cluster.x, label),
+    size = degree(g_simp),
+    colour = ifelse(grepl("_", clusterID), "background", label)
+  )
+```
+
+
+```{r , fig.width=15, fig.height=10}
+set.seed(2)
+p <- ggraph(g_simp, layout = "fr") +
+  geom_edge_link(colour = "grey") +
+  geom_node_point(aes(size = nodes$size, colour = nodes$colour)) +
+  geom_node_text(aes(label = nodes$label)) +
+  # scale_colour_manual(values = pal) +
+  theme_graph() +
+  theme(legend.position = "none")
+p
+```
+
+# Compare clusters
+
+```{r}
+pathway_enrichment_topclusters_Fstat <- pathway_enrichment_unnest_Fstat %>%
+  ungroup() %>%
+  mutate(corr_p_value = -log10(p.adjust)) %>%
+  group_by(cluster) %>%
+  dplyr::arrange(cluster, desc(corr_p_value), desc(Count)) %>%
+  slice_head(n = 5)
+
+pathway_enrichment_topclusters_noTPP <- pathway_enrichment_unnest_noTPP %>%
+  ungroup() %>%
+  mutate(corr_p_value = -log10(p.adjust)) %>%
+  group_by(cluster) %>%
+  dplyr::arrange(cluster, desc(corr_p_value), desc(Count)) %>%
+  slice_head(n = 5)
+
+intersect(pathway_enrichment_topclusters_Fstat$Description, pathway_enrichment_topclusters_noTPP$Description)
+
+merged_clusters <- pathway_enrichment_topclusters_Fstat %>%
+  select(cluster, Description) %>%
+  mutate(network = "with TPP") %>%
+  bind_rows(pathway_enrichment_topclusters_noTPP %>%
+    select(cluster, Description) %>%
+    mutate(network = "no TPP"))
+```
+
+## Venn diagram
+
+```{r}
+input_for_venn <- merged_clusters %>%
+  dcast(Description ~ network) %>%
+  mutate_at(.vars = vars(c(2:3)), as.logical)
+```
+
+
+```{r}
+p_venn1 <- ggplot(input_for_venn) +
+  geom_venn(aes(
+    A = `with TPP`,
+    B = `no TPP`
+  ),
+  fill_color = c("mediumseagreen", "grey"),
+  fill_alpha = 0.8,
+  stroke_alpha = 0, text_size = 10,
+  set_name_size = 10,
+  show_percentage = FALSE
+  ) +
+  coord_fixed() +
+  theme_void()
+p_venn1
+```
+
+
+
+## Jaccard index analysis
+
+
+```{r}
+merged_clusters_comparisons <- F_stat_nodes %>%
+  select(node, cluster) %>%
+  mutate(network = "with TPP") %>%
+  bind_rows(noTPP_nodes %>% select(node, cluster) %>% mutate(network = "no TPP")) %>%
+  ungroup() %>%
+  mutate(id = row_number()) %>%
+  acast(id ~ network + cluster, value.var = "node")
+
+LoL <- apply(merged_clusters_comparisons, 2, as.list)
+LoL <- lapply(LoL, function(x) x[!is.na(x)])
+
+overlaps <- sapply(LoL, function(x) {
+  sapply(LoL, function(y, x) length(intersect(x, y)), x)
+}) %>%
+  melt() %>%
+  setNames(c("cond1", "cond2", "overlap"))
+
+Jaccard_index <- sapply(LoL, function(x) {
+  sapply(LoL, function(y, x) length(intersect(x, y)) / length(union(x, y)), x)
+}) %>%
+  melt() %>%
+  setNames(c("cond1", "cond2", "JI")) %>%
+  left_join(overlaps)
+```
+
+
+
+```{r}
+pal <- c("1" = "#b68c47", "2" = "#934ac0", "3" = "#71b448", "4" = "#af5179", "5" = "#558965", "6" = "#bb4b37", "7" = "#6d7ab3", "no overlap" = "white")
+
+bb <- c(0,0.25, 0.5, 0.75, 1) # define breaks.
+#ll <- c("40%","30%","20%","10%","5%") # labels.
+
+
+p_JI <- Jaccard_index %>%
+  filter(cond1 != cond2) %>%
+  filter(!(grepl("with", cond1) & grepl("with", cond2))) %>%
+  filter(!(grepl("no", cond1) & grepl("no", cond2))) %>%
+  dplyr::mutate(normalized = purrr::map2_chr(cond1, cond2, ~ paste(sort(c(.x, .y)), collapse = ""))) %>%
+  distinct(normalized, .keep_all = T) %>%
+  dplyr::select(-normalized) %>%
+  mutate(
+    cluster_noTPP = gsub("no TPP_", "", cond2), cluster_withTPP = gsub("with TPP_", "", cond1),
+    colouring = ifelse(JI == 0, "no overlap", cluster_withTPP),
+    rounded = ifelse(JI != 0, round(JI,2), NA)
+  ) %>%
+  ggplot(aes(x = (cluster_withTPP), y = (cluster_noTPP), colour = colouring, size = JI)) +
+  geom_point() +
+  geom_text(aes(label = rounded), 
+            size = 4, colour = "black", fontface = "bold")+
+  #scale_size_continuous(range = c(3, 9)) +
+  scale_size_continuous(name = "JI",
+                          breaks = bb,
+                          limits = c(0, 1),
+                          range = c(1, 10) ) +
+  scale_colour_manual(values = pal, guide = "none") +
+  theme_bw(base_size = 16) +
+  theme(panel.grid = element_blank(), legend.position = "bottom") +
+  labs(x = "clusters networks with TPP", y = "clusters networks without TPP")
+p_JI
+```
+
+```{r}
+p_JI <- Jaccard_index %>%
+  filter(cond1 != cond2) %>%
+  filter(!(grepl("with", cond1) & grepl("with", cond2))) %>%
+  filter(!(grepl("no", cond1) & grepl("no", cond2))) %>%
+  dplyr::mutate(normalized = purrr::map2_chr(cond1, cond2, ~ paste(sort(c(.x, .y)), collapse = ""))) %>%
+  distinct(normalized, .keep_all = T) %>%
+  dplyr::select(-normalized) %>%
+  mutate(
+    cluster_noTPP = gsub("no TPP_", "", cond2), cluster_withTPP = gsub("with TPP_", "", cond1),
+    colouring = ifelse(JI == 0, "no overlap", cluster_withTPP),
+    rounded = ifelse(JI != 0, round(JI,2), NA)
+  ) %>%
+  ggplot(aes(x = (cluster_withTPP), y = (cluster_noTPP), fill = colouring)) +
+  geom_raster(aes(alpha = JI)) +
+  geom_text(aes(label = rounded), 
+            size = 4, colour = "black", fontface = "bold")+
+  scale_fill_manual(values = pal, guide = "none") +
+  theme_bw(base_size = 16) +
+  theme(panel.grid = element_blank(), legend.position = "none") +
+  labs(x = "clusters networks with TPP", y = "clusters networks without TPP")
+p_JI
+```
+
+
+
+### corrplot
+
+```{r}
+library(corrplot)
+
+myPalette <- colorRampPalette(c("wheat", "darksalmon",  "indianred"))
+
+JI_matrix <- Jaccard_index %>%
+  mutate(JI = ifelse(JI == 0, NA, JI))%>% 
+  acast(cond1~cond2, value.var = "JI")
+
+colnames(JI_matrix) <- gsub("^.*_", "",colnames(JI_matrix))
+
+rownames(JI_matrix) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9",
+                         " 1", " 2", " 3", " 4", " 5", " 6", " 7")
+corrplot::corrplot(JI_matrix,
+                   method = "shade",
+                   type = "upper",
+                   is.corr = F,
+                   # col = "black",
+                   col.lim = c(0,1),
+                   col  = myPalette(100),
+                   na.label= " ",
+                   addCoef.col = "black",
+                   tl.cex = 1.4,
+                   tl.srt = 0,
+                   tl.offset = 0.6,
+                   number.cex=0.7, 
+                   tl.col = c(rep("grey40", 9), rep("mediumseagreen", 7)))
+```
+
+```{r}
+myPalette <- colorRampPalette(c("wheat", "darksalmon",  "indianred"))
+
+JI_matrix <- Jaccard_index %>%
+  mutate(JI = ifelse(JI == 0, NA, JI))%>% 
+  acast(cond1~cond2, value.var = "JI")
+
+colnames(JI_matrix) <- gsub("^.*_", "",colnames(JI_matrix))
+
+rownames(JI_matrix) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9",
+                         " 1", " 2", " 3", " 4", " 5", " 6", " 7")
+corrplot::corrplot(JI_matrix,
+                   method = "circle",
+                   type = "upper",
+                   is.corr = F,
+                   # col = "black",
+                   col.lim = c(0,1),
+                   col  = myPalette(100),
+                   na.label= " ",
+                   addCoef.col = "black",
+                   tl.cex = 1.2,
+                   tl.srt = 0,
+                   tl.offset = 0.6,
+                   number.cex=0.7, 
+                   tl.col = c(rep("grey40", 9), rep("mediumseagreen", 7)))
+```
+

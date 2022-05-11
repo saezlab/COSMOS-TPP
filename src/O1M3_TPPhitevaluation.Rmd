@@ -1,0 +1,2052 @@
+---
+title: "O1M3: Evaluate TPP hits"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    theme: united
+    code_folding: hide
+---
+
+# O1M3: Evaluate TPP hits
+
+## General settings
+
+Set working directory and outut options.
+
+```{r setup}
+knitr::opts_chunk$set(echo      = TRUE, 
+                      warning   = FALSE,
+                      message   = FALSE,
+                      include   = TRUE,
+                      cache     = TRUE,
+                      cache.lazy = FALSE,
+                      eval      = TRUE,
+                      dpi = 700
+                      #fig.width = 6*(1+sqrt(5))/2, fig.height = 6 #golden ratio
+)
+
+knitr::opts_knit$set(root.dir ="/Users/miraburtscher/Documents/gsk/Master_thesis_extended/O1_TPPexploration_footprinting/")
+```
+
+Load packages.
+
+```{r, message=F, warning =F}
+library(tidyverse)
+library("reshape2")
+library(OmnipathR)
+library(xlsx)
+library(viridis)
+library(ggrepel)
+options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(visNetwork)
+library(knitr)
+library(ggpubr)
+#library(ROracle)
+library(dbplyr)
+library(cowplot)
+library(ggvenn)
+library(networkD3)
+```
+
+### Functions
+
+Load metabase library.
+
+```{r, cache=F}
+# library(metabaser)
+# 
+# # clear.cache()
+# 
+# # install.packages("C:/Users/mb923573/Documents/metabase/metabaser_4.3.0.tar.gz", type="source", repos=NULL, INSTALL_opts = "--no-multiarch")
+# source("C:/Users/mb923573/Documents/metabase/metabase.R")
+# connect_to_mb()
+```
+
+Establish connection to Cellzome database. (Only necessary for uniprot annotations)
+
+```{r, cache = F}
+# #' Get connection to Cellzome Oracle database (must be in GSK net or VPN)
+# #' It is a good idea to keep the helper file separate since it contains
+# #' the user and password.
+# source("src/cz_database.R")
+# con <- get_cz_db_connection()
+# #' Function for the conversion of Uniprot accessions to gene/transcript IDs
+# map_uniprot_ids <- function(ids,
+#                             type = c("EntrezID", "EnsemblGene", "EnsemblTrans","EnsemblProtein", "StringDB"),
+#                             con,
+#                             max_query_size = 1000) {
+# 
+#   require(ROracle)
+# 
+#   type <- match.arg(type)
+# 
+#   int_type <- c(
+#     "EntrezID" = "GeneID",
+#     "EnsemblGene" = "Ensembl",
+#     "EnsemblTrans" = "Ensembl_TRS",
+#     "EnsemblProtein" = "Ensembl_PRO",
+#     "StringDB" = "STRING")[type]
+# 
+#   ids <- unique(na.omit(ids))
+#   ids <- split(ids, (seq_along(ids) - 1) %/% max_query_size)
+# 
+#   protein2ext <- list()
+#   for (i in names(ids)) {
+# 
+#     query <- paste0(
+#       "select distinct ACCESSION, EXTERNAL_ID from ANNOTATION.UNIPROT_ID_MAPPING where TYPE = '",
+#       int_type, "' and ACCESSION in (",
+#       paste0("'", ids[[i]], "'", collapse = ","), ")"
+#     )
+#     protein2ext[[i]] <- ROracle::dbGetQuery(con, query)
+# 
+#   }
+# 
+#   protein2ext <- dplyr::bind_rows(protein2ext)
+#   colnames(protein2ext) <- c("UniprotAcc", type)
+# 
+#   distinct(protein2ext)
+# }
+```
+
+PKN analysis functions
+
+```{r}
+source("src/PKN_analysis_functions.R")
+```
+
+
+### Load data
+
+```{r, message =F}
+TPP2D_UWB <- read.table("data/2DTPP_UWB_Ola_2021-03-24.txt", row.names = 1, sep = "\t")
+
+load("results/210825_allTPPscores.RData")
+load("results/210902_viper_footprints.RData")
+load("data/210626_DEmultiomics_Olaparib_gathered_updated")
+#load("data/210626_empiricalzscore_footprints.RData") # old footprints
+
+load("data/KSN.RData")
+load("data/dorothea.RData")
+phosphoproteomics <- read_tsv("data/DE_analyses/LIMMA_results_PhosphoFollowUp_Phospho.txt", )
+```
+
+Prior knowledge
+
+```{r, message =F}
+COSMOS_PKN <- read_csv("data/PKN_files/meta_network_carnival_ready_exch_solved_fullomni_metfiltered.csv") %>%
+  setNames(c("source", "sign", "target"))
+
+COSMOS_PKN_new <- read_csv("data/PKN_files/cosmos_PKN.csv") %>%
+  setNames(c("source", "sign", "target"))
+
+GSK_PKN <- read.table("data/PKN_files/GSK_Causal_Network_032021.txt") %>%
+  mutate(V2 = str_replace(V2, "Inhibits", "-1"),
+         V2 = str_replace(V2, "Activates", "1"),
+         V2 = as.numeric(V2))%>%
+  setNames(c("source", "sign", "target"))
+
+```
+
+
+```{r}
+values_effect <- c("active" = "slateblue4",
+                   "inactive" = "slateblue1",
+                   "stabilized"= "darkcyan",
+                   "destabilized" = "aquamarine3",
+                   "increased abundance" = "maroon",
+                   "decreased abundance" = "salmon")
+
+values_effect_proteoemics <-  c("active" = "slateblue4",
+                   "inactive" = "slateblue1",
+                   "stabilized"= "darkcyan",
+                   "destabilized" = "aquamarine3",
+                   "increased abundance" = "maroon",
+                   "expressed" = "indianred")
+```
+
+
+## Hit call evaluation
+
+### Overlap comparison
+
+Compare overlaps between footprinting proteins and TPP hit calling strategies.
+
+* little overlap of footprinting and TPP derived proteins (2-3 proteins)
+* different number of hits per hit calling strategy
+
+Extract footprinting information
+
+```{r}
+# #transcriptomics
+# 
+#   transcriptomic_regulators <- empiricalzscore_act_transcriptomics %>%
+#   filter(sample == "UWB1.289_24h_4uM" ) %>%
+#   group_by(sample) %>%
+#   top_n(wt = abs(score), n = 40) %>%
+#   mutate(type = "transcriptomics")
+# 
+# #phosphoproteomics
+# phosphoproteomic_regulators <- empiricalzscore_act_phosphoproteomics %>%
+#   filter(sample == "UWB1.289_24h_4uM"  & abs(zscore) > 0.5) %>%
+#   mutate(type = "phosphoproteomics")
+# 
+# 
+# footprints_UWB_ola_hits <- rbind(transcriptomic_regulators, phosphoproteomic_regulators) %>%
+#   mutate(hit_call = "footprinting",
+#          mode = ifelse(score > 0, "stabilized", "destabilized"),
+#          score = score) %>%
+#   dplyr::select(gene_name = protein, hit_call, mode, score, type)
+# footprints_UWB_ola_hits <- viper_UWB %>%
+#   filter(drug == "Olaparib" & cellline == "UWB_BRCAnull" & timepoint == "24h" & concentration == "4uM" & pvalue_adj < 0.05) %>%
+#   #filter(!(type == "proteomic" & pvalue_adj > 0.01)) %>%
+#   mutate(hit_call = "footprinting",
+#          mode = ifelse(NES > 0, "stabilized", "destabilized"),
+#          score = NES) %>%
+#   dplyr::select(gene_name = protein, hit_call, mode, score, type)
+
+footprints_UWB_ola_hits <- bind_rows("phospho" = filter(viperRes_phospho_corrected, condition_long == "UWB1.289_24h_4uM" ) %>% top_n(n = 30, wt = absNES),
+                                      "trans" =filter(viperRes_trans, condition_long == "UWB1.289_24h_4uM" ) %>% top_n(n = 30, wt = absNES), 
+                                     .id = "omic") %>% 
+  mutate(mode = ifelse(NES > 0, "active", "inactive"), hit_call = "footprinting") %>% 
+  dplyr::select(gene_name = regulator, hit_call, mode, score = NES, type = omic)
+
+```
+
+Comparison with TPP hits.
+
+```{r}
+TPP_all_scores <- TPP_all_scores %>%
+  mutate(hit_call = ifelse(hit_call == "TPPwindowSG", "TPPwindow", hit_call))  %>%  mutate(hit_call = gsub("TPP", "", hit_call))
+
+
+hit_comparisons <- bind_rows(footprints_UWB_ola_hits, TPP_all_scores) %>%
+  mutate(type = ifelse(is.na(type), "TPP", type)) %>%
+  dplyr::select(-representative) %>%
+  group_by(gene_name) %>%
+  mutate(n_scores = n())%>%
+  group_by(hit_call) %>%
+  mutate(n_proteins = n()) 
+
+
+protein_order <- hit_comparisons %>%
+  ungroup() %>%
+  dplyr::select(gene_name, n_scores) %>%
+  distinct(gene_name, .keep_all = T) %>%
+  arrange(-n_scores)
+
+hit_call_levels <- c( "classical" , "window", "stability", "Fstatistic", "monotony" , "footprinting")
+```
+
+
+```{r, fig.width=7, fig.height=4}
+p_comp <-   ggplot(hit_comparisons,
+                                 aes(y = factor(hit_call, levels =hit_call_levels), 
+                                  x = factor(gene_name, levels = protein_order$gene_name))) + 
+  geom_raster(aes(fill = factor(mode, levels = c("decreased abundance", "increased abundance", "destabilized", "stabilized", "active", "inactive"))), colour = "white") + 
+  scale_fill_manual(values = values_effect, name = "effect") +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  labs(x = "proteins", y = "hit_call", title = "Overlaps of TPP sets and footprinting regulators")
+p_comp
+```
+
+Plot for thesis
+
+```{r, fig.width=10, fig.height=5, eval = F}
+p_comp <-   ggplot(hit_comparisons,
+                                 aes(y = factor(hit_call, levels =hit_call_levels),
+                                  x = factor(gene_name, levels = protein_order$gene_name))) +
+  geom_raster(aes(fill = factor(mode, levels = c("decreased abundance", "increased abundance", "destabilized", "stabilized", "active", "inactive"))), colour = "white") +
+  scale_fill_manual(values = values_effect, name = "effect") +
+  theme_bw(base_size = 18) +
+  theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  labs(x = "proteins", y = "")
+p_comp
+```
+Plot for Katharina
+
+```{r, fig.width=10, fig.height=5, eval = F}
+values_effect_small <- c("active" = "slateblue4",
+                   "inactive" = "slateblue1",
+                   "stabilized"= "darkcyan",
+                   "destabilized" = "aquamarine3")
+
+protein_order_small <- hit_comparisons %>%
+  filter(hit_call %in% c("footprinting", "monotony")) %>% 
+  dplyr::group_by(gene_name) %>% 
+  dplyr::mutate(n_scores = n()) %>% 
+  ungroup() %>%
+  dplyr::select(gene_name, n_scores) %>%
+  distinct(gene_name, .keep_all = T) %>%
+  arrange(-n_scores)
+```
+
+
+```{r, fig.width=6, fig.height=2, eval = F}
+p_comp <- hit_comparisons %>% 
+  filter(hit_call %in% c("footprinting", "monotony")) %>% 
+  mutate(hit_call = gsub("monotony", "TPP", hit_call)) %>% 
+  ggplot(aes(y = hit_call,
+             x = factor(gene_name, levels = protein_order_small$gene_name))) +
+  geom_raster(aes(fill = factor(mode, levels = c("destabilized", "stabilized", "active", "inactive"))), colour = "white") +
+  scale_fill_manual(values = values_effect_small, name = "effect") +
+  theme_bw(base_size = 18) +
+  theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  labs(x = "proteins", y = "", title = "overall")
+p_comp
+
+# ggsave(plot = p_comp, device='tiff', dpi=500,
+#        height= 3, width = 6,
+#         path = "/Users/miraburtscher/Desktop/",
+#        filename = "TPPcomplementarity")
+```
+
+#### Paper
+
+```{r fig.width=4.5, fig.height=2}
+values_paper <- c("Kinase" = "darkcyan", "TF" = "maroon4", "TPP" = "mediumseagreen")
+
+p_comp <- hit_comparisons %>% 
+  filter(hit_call %in% c("footprinting", "monotony")) %>% 
+  mutate(hit_call = gsub("monotony", "TPP", hit_call), 
+        hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% dorothea$source_genesymbol), "TF", hit_call),
+         hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% KSN$enzyme_genesymbol), "Kinase", hit_call),
+        mode = factor(mode, levels = c("stabilized","destabilized",  "active", "inactive")))%>% 
+  ggplot(aes(y = hit_call,
+             x = factor(gene_name, levels = protein_order_small$gene_name))) +
+  geom_raster(aes(fill = hit_call, alpha = mode), 
+              colour = "white") +
+  scale_fill_manual(values = values_paper, name = "") +
+  scale_alpha_manual(values = c(1, 0.7, 1, 0.7), guide = F) +
+  #theme_bw(base_size = 18) +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position = "right")+
+  labs(x = "all proteins", y = "")
+p_comp
+```
+
+
+
+```{r}
+# #install.packages("ggvenn")
+# library(ggvenn)
+# 
+# TPP_for_venn <- hit_comparisons %>% 
+#   dplyr::select(gene_name, hit_call) %>% 
+#   dcast(gene_name ~ hit_call)  %>% 
+#   mutate_at(.vars = vars(c(2:7)), as.logical) %>% 
+#   dplyr::select(value = gene_name,Fstatistic, classical, monotony,stability, footprinting, window)
+# 
+# p_venn1 <- ggplot(TPP_for_venn) +
+#     geom_venn(aes(A = `Fstatistic`,
+#                   B = `window`,
+#                   C = `monotony`,
+#                   D = `stability`),
+#               fill_color = c("darkolivegreen3", "cyan4", "hotpink3", "darkgoldenrod1"),
+#               fill_alpha = 0.3,
+#               stroke_alpha = 0,
+#               set_name_size = 4,
+#               show_percentage = FALSE) +
+#   coord_fixed() +
+#   theme_void()
+# p_venn1
+# 
+# p_venn2 <- ggplot(TPP_for_venn) +
+#     geom_venn(aes(A = `Fstatistic`,
+#                   B = `footprinting`,
+#                   C = `monotony`),
+#               fill_color = c("cyan", "darkmagenta", "darkorange2", "firebrick2"),
+#               fill_alpha = 0.3,
+#               stroke_alpha = 0,
+#               set_name_size = 3,
+#               show_percentage = FALSE) +
+#   coord_fixed() +
+#   theme_void()
+# p_venn2
+```
+
+
+### Functional annotation
+
+Annotate with information of Uniprot.
+
+* Molecular Function: footprintig results clearly show the enzyme characteristics iof the proteins (Kinase, Transferase,DNA binding activator, repressor)
+
+* Cellular compartment: Mainly cytosol and nucleus, TPP proteins also in membrane and ER
+
+* PTM: similar PTM profile, phosphorylation, acetylation and ubiquitinylation are the most prominent PTMs
+
+```{r, eval = FALSE}
+ids <- mapIds(org.Hs.eg.db, hit_comparisons$gene_name, 'UNIPROT', 'SYMBOL')
+  
+# map_uniprot_ids(ids, con = con)
+
+# Get keyword table and the type of the keyword
+keyw <- tbl(con, in_schema("ANNOTATION", "UNIPROT_KEYWORD"))
+keywt <- tbl(con, in_schema("ANNOTATION", "UNIPROT_KEYWORDTYPE"))
+
+# Joint tables, filter for Uniprot accessions and collect results
+functional_description <- keyw %>%
+  left_join(keywt) %>%
+  filter(ACCESSION %in% ids) %>%
+  collect() %>%
+  mutate(gene_name = mapIds(org.Hs.eg.db, ACCESSION, 'SYMBOL', 'UNIPROT'))
+
+TPP_hits_functional_anno <- hit_comparisons %>%
+  left_join(functional_description, by = "gene_name") 
+
+```
+
+
+```{r, fig.width=7, fig.height=7, eval = FALSE}
+
+p_TPP_hits_functional_anno_PTM <- TPP_hits_functional_anno %>%
+  filter(CATEGORY == "PTM") %>%
+  group_by(KEYWORD) %>%
+  filter(n() > 10) %>%
+  ggplot(aes(x = hit_call, fill = KEYWORD)) +
+  geom_bar(stat = "count", position = position_stack()) +
+  scale_fill_brewer(palette="Set1")+
+  theme_bw(base_size = 14)+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust =1, size =14), legend.position = "top") +
+  labs(title="Uniprot PTM annotations per hit calling strategy", x = "") +
+  guides(fill=guide_legend(ncol=2, title = ""))
+p_TPP_hits_functional_anno_PTM
+
+p_TPP_hits_functional_anno_MF <- TPP_hits_functional_anno %>%
+  filter(CATEGORY == "Molecular function") %>%
+  group_by(KEYWORD) %>%
+  filter(n() > 10) %>%
+  ggplot(aes(x = hit_call, fill = KEYWORD)) +
+  geom_bar(stat = "count", position = position_stack())+
+  scale_fill_brewer(palette="Paired")+
+    theme_bw(base_size = 14)+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust =1, size =14), legend.position = "top") +
+  labs(title="Uniprot Molecular Function annotations per hit calling strategy", x = "") +
+  guides(fill=guide_legend(ncol=3, title = ""))
+p_TPP_hits_functional_anno_MF
+
+p_TPP_hits_functional_anno_CC <- TPP_hits_functional_anno %>%
+  filter(CATEGORY == "Cellular component") %>%
+  group_by(KEYWORD) %>%
+  filter(n() > 10) %>%
+  ggplot(aes(x = hit_call, fill = KEYWORD)) +
+  geom_bar(stat = "count", position = position_stack())+ 
+  theme_bw(base_size = 14)+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust =1, size =14), legend.position = "top") +
+  labs(title="Uniprot Cellular Component annotations per hit calling strategy", x = "") +
+  guides(fill=guide_legend(ncol=4, title = ""))
+p_TPP_hits_functional_anno_CC
+
+```
+
+### Proteomic signal
+
+Compare TPP information with expression proteomics data to assess changes in protein abundance and stability.
+
+* footprinting is independent of expression changes
+* TPP strategies recover abundance and stability changes
+* Strategies which resolve abundance changes work well (F-statistic)
+
+```{r}
+# filter proteomics data
+proteomics_filtered_FCs <- proteomics_ola %>% 
+  filter(condition_long == "UWB1.289_24h_4uM") %>%
+  mutate(significance = ifelse(adj.P.Val < 0.05, "significant", "not significant")) %>%
+  dplyr::select(GeneSymbol, logFC, significance)
+
+proteomics_hits <- proteomics_filtered_FCs %>%
+  filter(significance == "significant")
+
+# join with TPP results
+proteomics_filtered_FCs <- proteomics_filtered_FCs  %>% 
+  full_join(hit_comparisons, by = c("GeneSymbol" = "gene_name")) 
+
+proteomics_filtered_FCs <- proteomics_filtered_FCs%>%
+  mutate(hit_call = ifelse(is.na(hit_call), "no hit", hit_call),
+         mode = ifelse(is.na(mode), "expressed", mode),
+         logFC = ifelse(is.na(logFC), 0, logFC),
+         proteomics_significance = ifelse(is.na(significance), "no signal", significance))
+```
+
+
+```{r, fig.width=7, fig.height=5}
+proteomics_comparison <- ggplot(proteomics_filtered_FCs, aes(x = hit_call, y = logFC, colour = mode, shape = proteomics_significance)) +
+  geom_point(size = 3)+
+  geom_jitter(width = 0.1) +
+  #geom_text_repel(aes(label = GeneSymbol), colour = "grey", size = 4) +
+  scale_colour_manual(values = values_effect_proteoemics) +
+  scale_shape_manual(values = c(16, 17, 8)) +
+  theme_bw(base_size = 14)+
+  theme(axis.text.x = element_text(angle = 45, hjust =1, vjust=1)) +
+  labs(y = "log2 fold-change expression proteomics", title = "Comparison TPP proteins vs expression proteomics")
+proteomics_comparison
+
+proteomics_comparison_boxplot <- ggplot(proteomics_filtered_FCs, aes(x = hit_call, y = logFC, colour = mode)) +
+  geom_boxplot()+
+  geom_point(position=position_jitterdodge(jitter.width = 0.1)) +
+  scale_colour_manual(values =values_effect_proteoemics) +
+  theme_bw(base_size = 14)+
+  theme(axis.text.x = element_text(angle = 45, hjust =1, vjust=1)) +
+  labs(y = "log2 fold-change expression proteomics", title = "Comparison TPP proteins vs expression proteomics")
+proteomics_comparison_boxplot
+```
+
+
+
+
+### Correlations
+
+
+### Phosphorylation
+
+Assess changes on phosphoproteomic level and their impact on TPP proteins
+
+```{r}
+transcriptomics_filtered <- transcriptomics_ola %>%
+  filter(condition_long == "UWB1.289_24h_4uM") %>%
+  inner_join(hit_comparisons, by = c("GeneSymbol" = "gene_name"))
+
+affected_phosphosites <- phosphoproteomics %>%
+  dplyr::filter(condition == "BRCA_nul_24h_4" &
+           comparison == "Ola" ) %>%
+  dplyr::select(label, gene_name, psite_fscore, logFC, adj.P.Val)
+
+TPP_hits_phosphositelevel <- inner_join(hit_comparisons, affected_phosphosites, by = "gene_name") %>%
+  #filter(hit_call != "footprinting") %>%3
+  mutate(significance = ifelse(adj.P.Val < 0.05, "significant", "not significant"))
+```
+
+```{r, fig.width=7, fig.height=10}
+volcano_affected_psites <- ggplot(TPP_hits_phosphositelevel,
+                                  aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_hline(yintercept = 0, colour = "gray28")+
+  geom_vline(xintercept = 0, colour = "gray28")+
+  geom_point(aes(colour = significance))+
+  geom_text_repel(label = TPP_hits_phosphositelevel$label, size = 3, colour = "gray2") +
+  scale_colour_manual(values = c("grey", "darkcyan")) +
+   facet_wrap(~hit_call, ncol = 2) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "top") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Phosphorylated TPP proteins", x = "log2 fold-change phosphoproteomics")+
+  guides(colour=guide_legend(ncol=2, title = ""))
+volcano_affected_psites
+```
+
+```{r, fig.width=7, fig.height=10}
+P_omic_correlation <-  bind_rows("transcriptomic" = (transcriptomics_filtered %>% filter(hit_call != "no hit" ) %>% 
+                                              dplyr::select(gene_name = GeneSymbol, hit_call, mode, score, logFC)),
+                                  "proteomic" = (proteomics_filtered_FCs %>% filter(hit_call != "no hit") %>% 
+                                                 dplyr::select(gene_name =GeneSymbol, hit_call, mode, score, logFC)), 
+                                 "phosphoproteomic" = (TPP_hits_phosphositelevel %>% filter(hit_call != "no hit") %>% 
+                                                 dplyr::select(gene_name, hit_call, mode, score, logFC)), .id = "type") %>% 
+  #group_by(type, hit_call) %>% 
+  #mutate(score = scale(score)) %>% 
+  filter(hit_call != "classical" & gene_name != "AVD") %>% # AVD is an extreme outlier and therfore removed to not spoil the plot
+  ggplot(aes(x = logFC, y = score, colour = mode)) +
+  geom_hline(yintercept = 0, colour = "gray28")+
+  geom_vline(xintercept = 0, colour = "gray28")+
+  geom_point() +
+  stat_smooth(method = "lm", col = "darkgray") +
+  scale_colour_manual(values = values_effect) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "top") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  facet_grid(hit_call~type, scales = "free_y") +
+  #labs(title="Correlation with transcriptomics and proteomics data", x = "log2 fold-change Olaparib vs DMSO (UWB1.289)", y = "hit calling score") 
+  labs(x = "log2 fold-change Olaparib vs DMSO (UWB1.289)", y = "hit calling score", title = "Correlation of TPP scores with other omics measurements") +
+  guides(colour=guide_legend(ncol=3, title = ""))
+P_omic_correlation
+```
+
+Plot for thesis
+
+```{r, eval = F}
+P_omic_correlation <-  bind_rows("transcriptomic" = (transcriptomics_filtered %>% filter(hit_call != "no hit" ) %>% 
+                                              dplyr::select(gene_name = GeneSymbol, hit_call, mode, score, logFC)),
+                                  "proteomic" = (proteomics_filtered_FCs %>% filter(hit_call != "no hit") %>% 
+                                                 dplyr::select(gene_name =GeneSymbol, hit_call, mode, score, logFC)), 
+                                 "phosphoproteomic" = (TPP_hits_phosphositelevel %>% filter(hit_call != "no hit") %>% 
+                                                 dplyr::select(gene_name, hit_call, mode, score, logFC)), .id = "type") %>% 
+  #group_by(type, hit_call) %>% 
+  #mutate(score = scale(score)) %>% 
+  filter(hit_call != "classical" & gene_name != "AVD") %>% 
+  ggplot(aes(x = logFC, y = score, colour = mode)) +
+  geom_hline(yintercept = 0, colour = "gray28")+
+  geom_vline(xintercept = 0, colour = "gray28")+
+  geom_point() +
+  stat_smooth(method = "lm", col = "darkgray") +
+  scale_colour_manual(values = values_effect) +
+  theme_bw(base_size = 16) +
+  theme(legend.position = "none") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  facet_grid(hit_call~type, scales = "free_y") +
+  #labs(title="Correlation with transcriptomics and proteomics data", x = "log2 fold-change Olaparib vs DMSO (UWB1.289)", y = "hit calling score") 
+  labs(x = "log2 fold-change Olaparib vs DMSO (UWB1.289)", y = "hit calling score")
+P_omic_correlation
+```
+
+Number of phosphosites on TPP hits
+
+```{r}
+n_proteins <- hit_comparisons %>%
+  group_by(hit_call) %>%
+  summarise(n_proteins = n()) %>%
+  arrange(n_proteins)
+
+# all psites
+n_psites <- TPP_hits_phosphositelevel %>%
+  group_by(hit_call) %>%
+  summarise(n_psites = n()) %>%
+  left_join(n_proteins, by = "hit_call") %>%
+  arrange(n_psites)
+
+kable(n_psites)
+
+# significant psites
+n_psites_sig <- TPP_hits_phosphositelevel %>%
+  filter(adj.P.Val < 0.05) %>%
+  group_by(hit_call) %>%
+  summarise(n_psites_sig = n()) %>%
+  left_join(n_proteins, by = "hit_call") %>%
+  arrange(n_psites)
+
+kable(n_psites_sig)
+
+n_psites_summ <- left_join(n_psites, n_psites_sig)
+
+```
+
+#### Paper
+
+```{r}
+my_comparisons <- list( c("Kinase", "TPP"), c("TF", "TPP"))
+p <- TPP_hits_phosphositelevel %>% 
+  filter(hit_call == "footprinting" | hit_call == "monotony") %>% 
+   mutate(hit_call = gsub("monotony", "TPP", hit_call), 
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% dorothea$source_genesymbol), "TF", hit_call),
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% KSN$enzyme_genesymbol), "Kinase", hit_call)) %>% 
+  ggplot(aes(hit_call, logFC)) +
+  geom_boxplot(aes(colour = hit_call), lwd =0.8) +
+  stat_compare_means(comparisons = my_comparisons, label.y = c(1.5, 1.3))+
+  scale_colour_manual(values = values_paper, guide = "none") +
+  cowplot::theme_cowplot() +
+  labs(x = "", y = "log2 fold-change \n phosphosite intensity")
+p
+
+```
+
+
+### Kinase targets
+
+Assess if TPP derived proteins map downstream of a regulator kinase.
+
+```{r}
+kinases_downstream <- filter(KSN, enzyme_genesymbol %in% footprints_UWB_ola_hits$gene_name) %>%
+  mutate(substrates = str_extract(substrate_genesymbol, "^.*?(?=_)")) %>%
+  dplyr::select(enzyme_genesymbol, substrates, sign) %>%
+  distinct(enzyme_genesymbol, substrates, sign)
+
+TPP_kinase_downstream_overlap <- inner_join(hit_comparisons, kinases_downstream, by = c("gene_name" = "substrates")) %>%
+  group_by(hit_call, enzyme_genesymbol) %>%
+  mutate(n_enz = n()) %>%
+  group_by(hit_call, gene_name) %>%
+  mutate(n_TPP = n()) %>% 
+  filter(hit_call != "footprinting")
+```
+
+
+```{r, fig.width=7, fig.height=10}
+p_kinase_targets <- ggplot(TPP_kinase_downstream_overlap, 
+                           aes(x = reorder(enzyme_genesymbol, -n_enz), 
+                               y = reorder(gene_name, n_TPP),
+                               group = gene_name
+                               )) + #reorder(gene_name, n_TPP))) +
+  geom_point(size=1, colour = "darkcyan") +
+  geom_line(colour = "darkcyan") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 90, hjust =1, vjust = 0.5, size=8),
+        axis.text.y = element_text(size=8)) +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank()) +
+  #theme(axis.text.x = element_blank()) +
+  facet_wrap(~hit_call, ncol =2, scales = "free") +
+  labs(x = "kinase",
+       y= "TPP protein",
+       title = "TPP hits and mapped upstream regulator kinases")
+p_kinase_targets
+```
+
+```{r}
+n_kinasetargets <- TPP_kinase_downstream_overlap %>%
+  group_by(hit_call) %>%
+  summarise(n_kinasetargets = n(), kinases = list(unique(enzyme_genesymbol)), no_kinases = length(unique(enzyme_genesymbol))) %>%
+  arrange(n_kinasetargets)
+
+kable(n_kinasetargets)
+
+n_kinasetargets_summ <- left_join(n_psites_summ, n_kinasetargets) %>% 
+  mutate(`upstream kinases` = paste0(as.character(no_kinases),"/30")) %>% 
+  dplyr::select(strategy = hit_call, count = n_proteins, phosphosites = n_psites, `significant phosphosites` = n_psites_sig, `upstream kinases`, ` ` = kinases)
+kable(n_kinasetargets_summ)
+```
+
+```{r, fig.width=7, fig.height=10}
+kinase_example <- TPP_kinase_downstream_overlap %>% 
+  filter(enzyme_genesymbol == "CDK1" & hit_call == "monotony") %>% 
+  ungroup() %>% 
+  dplyr::select(from = enzyme_genesymbol, to = gene_name, sign) %>% 
+  mutate(dashes = ifelse(sign == 1, FALSE, TRUE))%>% 
+  filter(to %in% c("WWTR1", "CDC25", "CKAP2", "KIF11", "CDC20"))
+
+
+example_phospho <- TPP_hits_phosphositelevel %>% 
+  filter(hit_call == "monotony" & gene_name %in% kinase_example$to) %>% 
+  dplyr::select(from = gene_name, to = label) %>% 
+  mutate(sign = 1, dashes = FALSE)
+
+kinase_example <- bind_rows(kinase_example,example_phospho) %>% 
+  mutate(color = "grey", length = ifelse(grepl("_", to), 10, 300))
+
+nodes <- data.frame(id = unique(c(kinase_example$from, kinase_example$to))) %>% 
+  mutate(group = ifelse(id == "CDK1", "Kinase", "TPP"),
+         group = ifelse(grepl("_", id), "phosphosite", group),
+         shape = ifelse(group == "phosphosite", "dot", "square"),
+         label = gsub("^.*_", "",id), 
+         level = ifelse(group == "kinase", 1, 2),
+         level = ifelse(group == "phosphosite", 3, level),
+         level = ifelse(id == "CDK1", 1, level))
+
+p_kinase_example = visNetwork(nodes,kinase_example, height = "800px", width = "100%") %>%
+    visGroups(groupname = "TPP", color = "mediumseagreen") %>%
+    visGroups(groupname = "Kinase", color = "darkcyan") %>%
+    visGroups(groupname = "phosphosite", color = "darkseagreen") %>%
+    visEdges(physics = F, width = 2) %>% 
+  visNodes(font = '30px Arial black', physics = F) %>% 
+  visHierarchicalLayout(levelSeparation = 300, nodeSpacing = 70)
+    # visLegend() %>%
+    # visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE)  %>%
+  #visNetwork::visIgraphLayout(layout =  "layout_with_fr")
+p_kinase_example
+```
+
+
+
+### TF targets
+
+Assess if TPP derived proteins map downstream of a regulator kinase.
+
+* Note: viper found a lot more significant TF regulators than othe methods which is surely biasing the showed results
+
+```{r}
+footprint_TFs <- dorothea %>%
+  filter(source_genesymbol %in% footprints_UWB_ola_hits$gene_name)
+
+TPP_TF_downstream_overlap <- inner_join(hit_comparisons, footprint_TFs, by = c("gene_name" = "target_genesymbol"))%>%
+  group_by(hit_call, source_genesymbol) %>%
+  mutate(n_enz = n()) %>%
+  group_by(hit_call, gene_name) %>%
+  mutate(n_TPP = n()) %>%
+  filter(hit_call != "footprinting")
+
+#%>%
+ # mutate(hit_call = ifelse(is.na(hit_call), "affected", hit_call))
+```
+
+
+```{r, fig.width=7, fig.height=10}
+p_TF_targets <- ggplot(TPP_TF_downstream_overlap,
+                           aes(x = reorder(source_genesymbol, -n_enz),
+                               y = reorder(gene_name, n_TPP),
+                               group = gene_name,
+                               colour = mode)) +
+  geom_point(size=3) +
+  geom_line() +
+  scale_colour_manual(values = values_effect) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1, size = 8),
+        axis.text.y = element_text( size = 8)) +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+        legend.position = "top")  +
+  facet_wrap(~hit_call, scales = "free", ncol = 2) +
+  labs(x = "TF",
+       y= "TPP protein",
+       title = "TPP hits in viper targets") +
+  guides(colour=guide_legend(ncol=3, title = ""))
+p_TF_targets
+```
+
+```{r}
+n_TFtarget <- TPP_TF_downstream_overlap %>%
+  group_by(hit_call) %>%
+  summarise(n_TFtarget = n()) %>%
+  left_join(n_proteins, by = "hit_call") %>%
+  arrange(n_TFtarget)
+
+kable(n_TFtarget)
+```
+
+
+
+### DNA repair pathway
+
+Check coverage of DNA damage and repair as well as cell cycle signaling and the contribution of different protein types.
+
+* pathway is enriched in footprinting and TPP proteins
+* TPP proteins complement footprinting information
+
+```{r}
+# metabase function
+# pathways <- get.maps()%>%
+#   filter(str_detect(map_name, c("DNA damage|Cell cycle|DNA repair")))
+# 
+# pathway_members <- get.map.genes(pathways$map_id)
+
+
+functional_coverage_TPP <- inner_join(pathway_members,hit_comparisons,  by = c("genesymbol"="gene_name") ) %>%
+  group_by(genesymbol) %>%
+  mutate(n_scores = n()) %>%
+  group_by(hit_call) %>%
+  mutate(n_protein = n()) %>%
+  ungroup()
+
+protein_order <- functional_coverage_TPP %>%
+  dplyr::select(genesymbol, n_scores) %>%
+  distinct(genesymbol, .keep_all = T) %>%
+  arrange(-n_scores)
+```
+
+```{r}
+library(reactome.db)
+pathwaymembers <- toTable(reactomePATHID2EXTID) %>% 
+  mutate(gene_name = mapIds(org.Hs.eg.db, gene_id, 'SYMBOL', 'ENTREZID'))
+
+pathway_names <-  toTable(reactomePATHID2NAME) %>% 
+  filter(grepl("Homo sapiens", path_name))
+
+DDR <- pathway_names %>% 
+  filter(grepl("DNA Damage|DNA damage|DNA Repair|DNA repair|Cell cycle|cell cycle", path_name))
+
+DDR_members <- pathwaymembers %>% 
+  filter(DB_ID %in% DDR$DB_ID) %>% 
+  distinct(gene_name)
+
+functional_coverage_TPP <- inner_join(DDR_members,hit_comparisons,  by = c("gene_name")) %>%   filter(hit_call %in% c("footprinting", "monotony")) %>% 
+  mutate(hit_call = gsub("monotony", "TPP", hit_call)) %>%
+  group_by(gene_name) %>%
+  mutate(n_scores = n()) 
+
+
+protein_order <-  functional_coverage_TPP %>%
+  dplyr::group_by(gene_name) %>% 
+  dplyr::mutate(n_scores = n()) %>% 
+  arrange(n_scores, hit_call) %>% 
+    distinct(gene_name)
+
+p_DNArepair <- functional_coverage_TPP%>% 
+  ggplot(aes(x = factor(gene_name, levels = protein_order$gene_name),
+             y = hit_call)) +
+  geom_raster(aes(fill=mode))+
+  scale_fill_manual(values =values_effect_small) +
+  theme_bw(base_size = 14) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1, size = 8), legend.position = "top", panel.grid = element_blank()) +
+  labs(x = "protein of DNA damage response",
+       y= "",
+       title = "Coverage of the DDR pathway") +
+  guides(fill = guide_legend(title = ""))
+p_DNArepair
+```
+
+#### Paper
+
+```{r}
+functional_coverage_TPP <- inner_join(DDR_members,hit_comparisons,  by = c("gene_name")) %>%   filter(hit_call %in% c("footprinting", "monotony")) %>% 
+  mutate(hit_call = gsub("monotony", "TPP", hit_call), 
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% dorothea$source_genesymbol), "TF", hit_call),
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% KSN$enzyme_genesymbol), "Kinase", hit_call),
+         mode = factor(mode, levels = c("stabilized","destabilized",  "active", "inactive"))) %>% 
+  group_by(gene_name) %>%
+  mutate(n_scores = n()) 
+
+
+protein_order <-  functional_coverage_TPP %>%
+  dplyr::group_by(gene_name) %>% 
+  dplyr::mutate(n_scores = n()) %>% 
+  arrange(n_scores, hit_call) %>% 
+    distinct(gene_name)
+
+p_DNArepair <- functional_coverage_TPP%>% 
+  ggplot(aes(x = factor(gene_name, levels = protein_order$gene_name),
+             y = hit_call)) +
+  geom_raster(aes(fill=hit_call, alpha = mode))+
+  scale_fill_manual(values =values_paper) +
+  scale_alpha_manual(values = c(1, 0.7, 1, 0.7), guide = F) +
+  cowplot::theme_cowplot() +
+    theme(axis.text.x = element_blank(),axis.ticks.x =  element_blank(), legend.position = "right") +
+  labs(x = "proteins of DDR",
+       y= "") +
+  guides(fill = guide_legend(title = ""))
+p_DNArepair
+```
+
+
+
+```{r, fig.width=7, fig.height=6}
+p_DNArepair <- ggplot(functional_coverage_TPP, aes(x = factor(genesymbol, levels = protein_order$genesymbol),
+                                                     y = factor(hit_call, levels = hit_call_levels))) +
+  geom_raster(aes(fill=mode))+
+  scale_fill_manual(values =values_effect) +
+  theme_bw(base_size = 14) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1, size = 8), legend.position = "top", panel.grid = element_blank()) +
+  labs(x = "protein of DNA damage response",
+       y= "",
+       title = "Coverage of the DDR pathway") +
+  guides(fill = guide_legend(title = ""))
+p_DNArepair
+```
+
+Thesis plot
+
+```{r, fig.width=12, eval = F}
+p_DNArepair <- ggplot(functional_coverage_TPP, aes(x = factor(genesymbol, levels = protein_order$genesymbol),
+                                                     y = factor(hit_call, levels = hit_call_levels))) +
+  geom_raster(aes(fill=mode))+
+  scale_fill_manual(values =values_effect) +
+  theme_bw(base_size = 18) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1, size = 10), legend.position = "none", panel.grid = element_blank()) +
+  labs(x = "protein of DNA damage response",
+       y= "")
+p_DNArepair
+```
+
+```{r}
+kable(functional_coverage_TPP %>% 
+  group_by(hit_call) %>% 
+  summarise(n = n()))
+```
+
+
+
+### Summary
+
+Collapse all information
+
+```{r}
+transcriptomics_hits <- transcriptomics_ola %>%
+  filter(condition_long == "UWB1.289_24h_4uM" & adj.P.Val < 0.05)
+
+summary <- hit_comparisons %>%
+  mutate(footprinitng_hit = ifelse(gene_name %in% footprints_UWB_ola_hits$gene_name, "affected", "not affected"))%>%
+  mutate(kinase_target = ifelse(gene_name %in% TPP_kinase_downstream_overlap$gene_name, "affected", "not affected")) %>%
+  mutate(TF_target = ifelse(gene_name %in% TPP_TF_downstream_overlap$gene_name,"affected", "not affected")) %>%
+   mutate(phosphorylation = ifelse(gene_name %in% TPP_hits_phosphositelevel$gene_name, "affected", "not affected")) %>%
+   mutate(DNApathway = ifelse(gene_name %in% functional_coverage_TPP$genesymbol, "affected", "not affected")) %>%
+  mutate(significant_transcript = ifelse(gene_name %in% transcriptomics_hits$GeneSymbol, "affected", "not affected")) %>%
+  mutate(significant_proteomics = ifelse(gene_name %in% proteomics_hits$GeneSymbol, "affected", "not affected"))%>%
+  dplyr::select(-n_scores, - n_proteins, -pval, -p_adj) %>%
+  melt(id.vars = c("gene_name", "hit_call", "mode", "score","type")) %>%
+  group_by(gene_name) %>%
+  mutate(n_scores = sum(value  != "not affected")) %>%
+  ungroup() %>%
+   mutate(value = factor(value, levels = c("affected", "not affected"))) %>%
+  group_by(hit_call) %>%
+  mutate(n_proteins = sum(value  != "not affected")) %>%
+  ungroup()
+
+variable_order <- summary %>%
+  dplyr::select(variable, n_proteins) %>%
+  distinct(variable, .keep_all = T) %>%
+  arrange(n_proteins)
+
+protein_order <- summary %>%
+  dplyr::select(gene_name, n_scores) %>%
+  distinct(gene_name, n_scores, .keep_all = T) %>%
+  arrange(-n_scores)
+
+
+summary <- filter(summary, hit_call != "footprinting")
+```
+
+
+```{r, fig.width = 7, fig.height = 9}
+p_summary <-   ggplot(summary, aes(y = factor(variable, levels = variable_order$variable),
+                                   x = factor(gene_name, levels = protein_order$gene_name))) +
+  geom_raster(aes(fill=value), alpha = 0.6)+
+  scale_fill_manual(values = c( "indianred", "white")) +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_blank(), axis.ticks.x=element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position = "top") +
+  facet_wrap(~hit_call, scales = "free_x", ncol =2) +
+  labs(x = "TPP hit",
+       y= "feature",
+       title = "TPP hit summary") +
+  guides(fill = guide_legend(title = ""))
+p_summary
+
+```
+
+
+```{r}
+summary_long <- summary %>%
+  dplyr::select(gene_name, hit_call, mode) %>%
+  bind_rows(summary %>% dplyr::select(gene_name, hit_call = variable, mode = value)) %>%
+  filter(mode != "not affected" ) %>%
+  #filter(mode != "not affected" & !(hit_call %in% c("TF_target", "footprinitng_hit", "kinase_target"))) %>%
+  #mutate(mode = ifelse(hit_call == "footprinting", "affected", mode)) %>%
+  group_by(gene_name) %>%
+  mutate(n_scores = n())%>%
+  group_by(hit_call) %>%
+  mutate(n_proteins = n())
+
+feature_order <- summary_long %>%
+  dplyr::select(hit_call, n_proteins) %>%
+  distinct(hit_call, .keep_all = T) %>%
+  arrange(n_proteins)
+
+protein_order <- summary_long %>%
+  ungroup() %>%
+  dplyr::select(gene_name, n_scores) %>%
+  distinct(gene_name, .keep_all = T) %>%
+  arrange(-n_scores)
+```
+
+
+```{r, fig.width = 7, fig.height = 5}
+p_comp <-   ggplot(summary_long, aes(y = factor(hit_call, levels = feature_order$hit_call),
+                                  x = factor(gene_name, levels = protein_order$gene_name))) +
+  geom_raster(aes(fill=mode), alpha = 0.6) +
+  scale_fill_manual(values = c(values_effect, "affected" = "gray30")) +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position = "top")+
+  labs(x = "proteins", y = "", title = "TPP strategy comparison")+
+  guides(fill = guide_legend(title = "", ncol = 3))
+p_comp
+```
+
+
+## PKN evaluation
+
+Prepare different PKNs.
+
+```{r}
+
+protein_list_COSMOS <- paste0("X",mapIds(org.Hs.eg.db, hit_comparisons$gene_name, 'ENTREZID', 'SYMBOL')) %>% unique()
+protein_list_GSK <-  hit_comparisons$gene_name %>% unique()
+
+# save(COSMOS_PKN, COSMOS_PKN_new, GSK_PKN, file = "data/310521_PKNcollection.RData")
+```
+
+### Size
+
+Compare network size
+
+```{r}
+nrow(COSMOS_PKN)
+nrow(COSMOS_PKN_new)
+nrow(GSK_PKN)
+
+COSMOS_nodes <- unique(c(COSMOS_PKN$source, COSMOS_PKN$target))
+COSMOS_protein_nodes <- COSMOS_nodes[!grepl("XMetab", COSMOS_nodes)]
+length(COSMOS_nodes)
+length(COSMOS_protein_nodes)
+
+COSMOS_new_nodes <- unique(c(COSMOS_PKN_new$source, COSMOS_PKN_new$target))
+COSMOS_new_protein_nodes <- COSMOS_new_nodes[!grepl("XMetab", COSMOS_new_nodes)]
+length(COSMOS_new_nodes)
+length(COSMOS_new_protein_nodes)
+
+GSK_nodes <- unique(c(GSK_PKN$source, GSK_PKN$target))
+length(GSK_nodes)
+colours_PKN <- c("COSMOS" = "darkcyan", "COSMOS_new" = "maroon", "GSK" = "goldenrod1")
+```
+
+
+```{r}
+GSK_PKN_tmp <- GSK_PKN %>%
+  mutate(source = paste0("X", mapIds(org.Hs.eg.db, source, 'ENTREZID', 'SYMBOL')),
+         target = paste0("X",mapIds(org.Hs.eg.db, target, 'ENTREZID', 'SYMBOL'))) %>%
+  filter(source != "XNA" & target != "XNA")
+
+PKNs <- bind_rows("GSK" = GSK_PKN_tmp, "COSMOS" = COSMOS_PKN, "COSMOS_new" = COSMOS_PKN_new, .id = "network") %>%
+  filter(source != "XNA" & target != "XNA")
+
+PKNs_summ <- PKNs %>%
+  group_by(network) %>%
+  summarise(edges = n(), nodes = length(unique(c(source, target)))) %>%
+  melt()
+```
+
+
+```{r, fig.width = 7, fig.height = 6}
+p_PKNs_summ <- ggplot(PKNs_summ, aes(x = network, y= value, fill = network)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_fill_manual(values = colours_PKN) +
+  facet_wrap(~variable, scales = "free") +
+  theme_bw(14) +
+  theme(legend.position = "top", axis.text.x = element_text(angle = 45, hjust=1, vjust=1)) +
+  labs(y = "number", x= "", title = "Number of nodes and edges of different PKNs") +
+  guides(fill = guide_legend(title = ""))
+p_PKNs_summ
+```
+
+Thesis plot
+
+```{r, eval=F}
+p_PKNs_summ <- ggplot(PKNs_summ, aes(x = network, y= value, fill = network)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_fill_manual(values = colours_PKN) +
+  facet_wrap(~variable, scales = "free") +
+  theme_bw(16) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust=1, vjust=1)) +
+  labs(y = "number", x= "", title = "Number of nodes and edges of different PKNs")
+p_PKNs_summ
+```
+
+### Overlaps
+
+```{r}
+PKN_edge_comp <- PKNs %>%
+  mutate(edge_collapsed = paste(source, sign, target, sep = "_")) %>%
+  acast(edge_collapsed~network, fun.aggregate = function(x){as.integer(length(x) > 0)})
+
+overlaps <- t(PKN_edge_comp) %*% PKN_edge_comp
+```
+
+
+```{r, eval = F}
+p <- chordNetwork(Data = overlaps,
+             width = 500,
+             height = 500,
+             colourScale = c("darkcyan", "mediumvioletred", "gold"),
+             labels = colnames(overlaps))
+
+p
+```
+
+
+```{r, fig.width = 7, fig.height = 7}
+PKNs_for_venn <- PKN_edge_comp  %>%
+  as.data.frame() %>%
+  rownames_to_column("edge_collapsed") %>%
+  mutate_at(.vars = vars(c(2:4)), as.logical)
+
+p_venn1 <- ggplot(PKNs_for_venn) +
+    geom_venn(aes(A = `COSMOS`,
+                  B = `COSMOS_new`,
+                  C = `GSK`),
+              fill_color = c("darkcyan", "mediumvioletred", "gold"),
+              fill_alpha = 0.3,
+              stroke_alpha = 0,
+              set_name_size = 5,
+              show_percentage = FALSE) +
+  coord_fixed() +
+  theme_void()
+p_venn1
+```
+
+
+### Connections
+
+Assess the number of target and source connections per node
+
+```{r}
+COSMOS_node_target_connections <- PKN_source_and_target_connections(PKN = COSMOS_PKN, protein_list = protein_list_COSMOS) %>%
+  mutate(gene_name = mapIds(org.Hs.eg.db, gsub("X", "",proteinID), 'SYMBOL', 'ENTREZID'),
+         network = "COSMOS")
+
+COSMOS_new_node_target_connections <- PKN_source_and_target_connections(PKN = COSMOS_PKN_new, protein_list = protein_list_COSMOS) %>%
+  mutate(gene_name = mapIds(org.Hs.eg.db, gsub("X", "",proteinID), 'SYMBOL', 'ENTREZID'),
+         network = "COSMOS_new")
+
+GSK_node_target_connections <- PKN_source_and_target_connections(PKN = GSK_PKN, protein_list = protein_list_GSK) %>%
+  mutate(gene_name = proteinID, network = "GSK")
+```
+
+
+```{r, fig.width=7, fig.height=4}
+p_edges_comparison <- bind_rows(COSMOS_node_target_connections, COSMOS_new_node_target_connections, GSK_node_target_connections) %>%
+  ggplot(aes(x= network, y = log2value, colour = variable)) +
+  geom_point(position=position_jitterdodge(),alpha=0.3) +
+  geom_boxplot() +
+  scale_color_manual(values = c("metaPKNconnections_target" = "mediumseagreen", "metaPKNconnections_source" = "darkcyan"))+
+  theme_bw(base_size = 14) +
+  labs(title = "PKN source and target connections")
+p_edges_comparison
+
+edges_comparison <- bind_rows(COSMOS_node_target_connections, GSK_node_target_connections, COSMOS_new_node_target_connections) %>%
+  dplyr::select(-proteinID, -log2value)
+
+```
+
+```{r}
+COSMOS_connectivity <- PKN_shortestpath_analysis(COSMOS_PKN, protein_list_COSMOS)
+
+COSMOS_new_connectivity <- PKN_shortestpath_analysis(COSMOS_PKN_new, protein_list_COSMOS)
+
+GSK_connectivity <- PKN_shortestpath_analysis(GSK_PKN, protein_list_GSK)
+int_GSK <- protein_list_GSK[protein_list_GSK %in% GSK_PKN$source | protein_list_GSK %in% GSK_PKN$target]
+
+
+COSMOS_connectivity_summary_hits <- melt(COSMOS_connectivity) %>%
+  mutate(value = ifelse(!is.finite(value),NA, value)) %>%
+  filter(Node1 %in% protein_list_COSMOS) %>%
+  group_by(Node1) %>%
+  summarise(mean_dist = mean(value, na.rm =T),
+            num_conn = sum(!is.na(value))) %>%
+  filter(num_conn > 10) %>% #minimum number of connections tob be considered
+  setNames(c("EntrezID", "mean_dist", "num_conn")) %>%
+  mutate(gene_name =mapIds(org.Hs.eg.db, gsub("X", "",EntrezID), 'SYMBOL', 'ENTREZID'))
+
+
+COSMOS_new_connectivity_summary_hits <- melt(COSMOS_new_connectivity) %>%
+  mutate(value = ifelse(!is.finite(value),NA, value)) %>%
+  filter(Node1 %in% protein_list_COSMOS) %>%
+  group_by(Node1) %>%
+  summarise(mean_dist = mean(value, na.rm =T),
+            num_conn = sum(!is.na(value))) %>%
+  filter(num_conn > 10) %>% #minimum number of connections to be considered
+  setNames(c("EntrezID", "mean_dist", "num_conn")) %>%
+  mutate(gene_name =mapIds(org.Hs.eg.db, gsub("X", "",EntrezID), 'SYMBOL', 'ENTREZID'))
+
+GSK_connectivity_summary_hits <- melt(GSK_connectivity) %>%
+  mutate(value = ifelse(!is.finite(value),NA, value)) %>%
+  filter(Node1 %in% protein_list_GSK) %>%
+  group_by(Node1) %>%
+  summarise(mean_dist = mean(value, na.rm =T),
+            num_conn = sum(!is.na(value))) %>%
+  setNames(c("gene_name", "mean_dist", "num_conn"))
+
+connectivity_comparison <- left_join(COSMOS_connectivity_summary_hits, GSK_connectivity_summary_hits, by = "gene_name", suffix = c(".COSMOS", ".GSK")) %>%
+  left_join(COSMOS_new_connectivity_summary_hits, by = "gene_name")%>%
+  dplyr::select(gene_name, mean_dist.COSMOS, mean_dist.GSK, mean_dist.COSMOS_new = mean_dist) %>%
+  melt() %>%
+  separate(variable, into = c("variable", "network"), sep = "\\.")
+
+```
+
+### Number of connections of TPP and footprinting hits
+
+Number of source and target connections of proteins assigned to different TPP and footprinting sets.
+
+```{r, fig.width=7, fig.height=6}
+PKN_eval_data <- bind_rows(edges_comparison, connectivity_comparison)
+
+hits <- hit_comparisons %>%
+  left_join(PKN_eval_data, by = "gene_name") %>%
+  dplyr::select(-pval, -p_adj, -n_scores, -n_proteins)
+
+p_PKN_eval <- ggplot(filter(hits, variable != "mean_dist"), aes(x = hit_call, y = log2(value), fill = variable)) +
+  #geom_point(aes(colour = variable),position=position_jitterdodge(),alpha=0.2) +
+  geom_boxplot(alpha = 0.7)+
+  facet_wrap(~network) +
+  #stat_compare_means(aes(group = hit_call), method = "anova", label.y = 12)+        # Add global annova p-value
+  #stat_compare_means(aes(group = hit_call),label = "p.signif", method = "t.test", ref.group = ".all.") +
+  scale_colour_manual(values = c("metaPKNconnections_target" = "mediumseagreen", "metaPKNconnections_source" = "darkcyan")) +
+  scale_fill_manual(values = c("metaPKNconnections_target" = "mediumseagreen", "metaPKNconnections_source" = "darkcyan")) +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1), legend.position = "top")+
+  guides(fill = guide_legend(title = "", ncol= 1)) +
+  labs(x = "", title = "Number of connections of TPP and footprinting hits")
+
+p_PKN_eval
+```
+
+### Global connectivity in complete PKN
+
+```{r, fig.width=7, fig.height=5}
+median_shortest_paths <- hits %>% 
+  mutate(network = gsub("_", " ", network)) %>% 
+  group_by(network, variable) %>% 
+  summarise(median = median(value, na.rm = T)) %>% 
+  filter(variable == "mean_dist")
+
+
+p_PKN_eval2 <- ggplot(filter(hits, variable == "mean_dist") %>% mutate(network = gsub("_", " ", network)),
+                      aes(x = factor(hit_call, levels = hit_call_levels), 
+                          y = value)) +
+  geom_boxplot(colour = "black") +
+  facet_wrap(~network)+
+  geom_hline(data = median_shortest_paths, aes(yintercept = median, group = network), colour = 'darkcyan',  size = 1.1) +
+
+  #stat_compare_means(method = "anova", label.y = 10)+        # Add global annova p-value
+  #stat_compare_means(label = "p.signif", method = "t.test",
+                    # ref.group = ".all.") +
+  #scale_colour_manual(values =c("COSMOS" = "darkcyan", "COSMOS_new" = "maroon", "GSK" = "goldenrod1")) +
+  #scale_fill_manual(values = c("metaPKNconnections_target" = "seagreen3", "metaPKNconnections_source" = "deepskyblue3")) +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1), panel.grid.major.x= element_blank(),  panel.grid.minor.y= element_blank()) +
+  labs(x = "", y = "mean shortest path to all other \n nodes of the PKN", title = "Global connectivity in complete PKN")
+p_PKN_eval2
+```
+
+Thesis plot
+
+```{r, eval = F}
+p_PKN_eval2 <- ggplot(filter(hits, variable == "mean_dist") %>% mutate(network = gsub("_", " ", network)),
+                      aes(x = factor(hit_call, levels = hit_call_levels), 
+                          y = value)) +
+  geom_boxplot(colour = "black") +
+  facet_wrap(~network)+
+  geom_hline(data = median_shortest_paths, aes(yintercept = median, group = network), colour = 'darkcyan',  size = 1.1) +
+
+  #stat_compare_means(method = "anova", label.y = 10)+        # Add global annova p-value
+  #stat_compare_means(label = "p.signif", method = "t.test",
+                    # ref.group = ".all.") +
+  #scale_colour_manual(values =c("COSMOS" = "darkcyan", "COSMOS_new" = "maroon", "GSK" = "goldenrod1")) +
+  #scale_fill_manual(values = c("metaPKNconnections_target" = "seagreen3", "metaPKNconnections_source" = "deepskyblue3")) +
+  theme_bw(base_size = 18) +
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1), panel.grid.major.x= element_blank(),  panel.grid.minor.y= element_blank()) +
+  labs(x = "", y = "mean shortest path to all other \n nodes of the PKN")
+p_PKN_eval2
+```
+
+
+
+### Connectivity of TPP proteins to footprinting proteins
+
+```{r}
+COSMOS_connectivity <- COSMOS_connectivity %>%
+    mutate(Node1 = mapIds(org.Hs.eg.db, gsub("X", "",Node1), 'SYMBOL', 'ENTREZID'),
+           Node2 = mapIds(org.Hs.eg.db, gsub("X", "",Node2), 'SYMBOL', 'ENTREZID'))
+COSMOS_new_connectivity <- COSMOS_new_connectivity %>%
+    mutate(Node1 = mapIds(org.Hs.eg.db, gsub("X", "",Node1), 'SYMBOL', 'ENTREZID'),
+           Node2 = mapIds(org.Hs.eg.db, gsub("X", "",Node2), 'SYMBOL', 'ENTREZID'))
+```
+
+
+```{r}
+footprints_TPPclass_connect <- shortestPaths_proteinlists(hit_comparisons,
+                                                          "classical",
+                                                          "footprinting",
+                                                          COSMOS_connectivity,
+                                                          GSK_connectivity,
+                                                          COSMOS_new_connectivity)
+
+footprints_TPPstability_connect <- shortestPaths_proteinlists(hit_comparisons,
+                                                          "stability",
+                                                          "footprinting",
+                                                          COSMOS_connectivity,
+                                                          GSK_connectivity,
+                                                          COSMOS_new_connectivity)
+
+footprints_TPPmonotony_connect <- shortestPaths_proteinlists(hit_comparisons,
+                                                          "monotony",
+                                                          "footprinting",
+                                                          COSMOS_connectivity,
+                                                          GSK_connectivity,
+                                                          COSMOS_new_connectivity)
+
+footprints_TPPwindow_connect <- shortestPaths_proteinlists(hit_comparisons,
+                                                          "window",
+                                                          "footprinting",
+                                                          COSMOS_connectivity,
+                                                          GSK_connectivity,
+                                                          COSMOS_new_connectivity)
+
+footprints_TPPwindow2_connect <- shortestPaths_proteinlists(hit_comparisons,
+                                                          "window2",
+                                                          "footprinting",
+                                                          COSMOS_connectivity,
+                                                          GSK_connectivity,
+                                                          COSMOS_new_connectivity)
+
+footprints_TPPFstatistic_connect <- shortestPaths_proteinlists(hit_comparisons,
+                                                          "Fstatistic",
+                                                          "footprinting",
+                                                          COSMOS_connectivity,
+                                                          GSK_connectivity,
+                                                          COSMOS_new_connectivity)
+
+footprints_TPPwindowSG_connect <- shortestPaths_proteinlists(hit_comparisons,
+                                                          "windowSG",
+                                                          "footprinting",
+                                                          COSMOS_connectivity,
+                                                          GSK_connectivity,
+                                                          COSMOS_new_connectivity)
+
+TPP_connectivity <- bind_rows(footprints_TPPclass_connect, footprints_TPPstability_connect, footprints_TPPmonotony_connect,
+                              footprints_TPPwindow_connect, footprints_TPPwindow2_connect, footprints_TPPFstatistic_connect, footprints_TPPwindowSG_connect)
+```
+
+
+<!-- ```{r} -->
+<!-- median_shortest_paths <- TPP_connectivity %>%  -->
+<!--   mutate(network = gsub("_", " ", network)) %>%  -->
+<!--   group_by(network) %>%  -->
+<!--   summarise(median = median(mean_dist, na.rm = T))  -->
+
+<!-- p_TPP_connectivity <- ggplot(TPP_connectivity %>%  mutate(network = gsub("_", " ", network)),  -->
+<!--                              aes(x= factor(hit_call, levels = hit_call_levels),  -->
+<!--                                  y = mean_dist, colour = network)) + -->
+<!--   geom_boxplot(colour = "black") + -->
+<!--   facet_wrap(~network)+ -->
+<!--   geom_hline(data = median_shortest_paths, aes(yintercept = median, group = network), colour = 'darkcyan',  size = 1.1) + -->
+<!--   theme_bw(base_size = 18) + -->
+<!--   theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1), panel.grid.major.x= element_blank(),  panel.grid.minor.y= element_blank()) + -->
+<!--   #stat_compare_means(aes(group = hit_call),method = "anova", label.y = 6)+        # Add global annova p-value -->
+<!--   #stat_compare_means(aes(group = hit_call),label = "p.signif", method = "t.test", -->
+<!--                     # ref.group = ".all.") + -->
+<!--   labs(x="", y= "mean shortest path to \n footprinting regulators") -->
+<!-- p_TPP_connectivity -->
+
+<!-- ``` -->
+
+<!-- ### Connectivity of unique TPP proteins to footprinting proteins -->
+
+
+<!-- ```{r} -->
+<!-- hit_comparisons_filt <- hit_comparisons %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   filter(if (hit_call != "footprinting") n_scores ==1 else n_scores > 0) -->
+
+<!-- footprints_TPPclass_connect_filt <- shortestPaths_proteinlists(hit_comparisons_filt, -->
+<!--                                                           "TPPclassical", -->
+<!--                                                           "footprinting", -->
+<!--                                                           COSMOS_connectivity, -->
+<!--                                                           GSK_connectivity, -->
+<!--                                                           COSMOS_new_connectivity) -->
+
+<!-- footprints_TPPstability_connect_filt <- shortestPaths_proteinlists(hit_comparisons_filt, -->
+<!--                                                           "TPPstability", -->
+<!--                                                           "footprinting", -->
+<!--                                                           COSMOS_connectivity, -->
+<!--                                                           GSK_connectivity, -->
+<!--                                                           COSMOS_new_connectivity) -->
+
+<!-- footprints_TPPmonotony_connect_filt <- shortestPaths_proteinlists(hit_comparisons_filt, -->
+<!--                                                           "TPPmonotony", -->
+<!--                                                           "footprinting", -->
+<!--                                                           COSMOS_connectivity, -->
+<!--                                                           GSK_connectivity, -->
+<!--                                                           COSMOS_new_connectivity) -->
+
+<!-- footprints_TPPwindow_connect_filt <- shortestPaths_proteinlists(hit_comparisons_filt, -->
+<!--                                                           "TPPwindow", -->
+<!--                                                           "footprinting", -->
+<!--                                                           COSMOS_connectivity, -->
+<!--                                                           GSK_connectivity, -->
+<!--                                                           COSMOS_new_connectivity) -->
+
+<!-- footprints_TPPwindow2_connect_filt <- shortestPaths_proteinlists(hit_comparisons_filt, -->
+<!--                                                           "TPPwindow2", -->
+<!--                                                           "footprinting", -->
+<!--                                                           COSMOS_connectivity, -->
+<!--                                                           GSK_connectivity, -->
+<!--                                                           COSMOS_new_connectivity) -->
+
+<!-- footprints_TPPFstatistic_connect_filt <- shortestPaths_proteinlists(hit_comparisons_filt, -->
+<!--                                                           "TPPFstatistic", -->
+<!--                                                           "footprinting", -->
+<!--                                                           COSMOS_connectivity, -->
+<!--                                                           GSK_connectivity, -->
+<!--                                                           COSMOS_new_connectivity) -->
+
+<!-- footprints_TPPwindowSG_connect_filt <- shortestPaths_proteinlists(hit_comparisons_filt, -->
+<!--                                                           "TPPwindowSG", -->
+<!--                                                           "footprinting", -->
+<!--                                                           COSMOS_connectivity, -->
+<!--                                                           GSK_connectivity, -->
+<!--                                                           COSMOS_new_connectivity) -->
+
+<!-- TPP_connectivity_filt <- bind_rows(footprints_TPPclass_connect_filt, footprints_TPPstability_connect_filt, footprints_TPPmonotony_connect_filt, -->
+<!--                               footprints_TPPwindow_connect_filt, footprints_TPPwindow2_connect_filt, footprints_TPPFstatistic_connect_filt, footprints_TPPwindowSG_connect_filt) -->
+
+<!-- p_TPP_connectivity_filt <- ggplot(TPP_connectivity_filt, aes(x= hit_call, y = mean_dist, colour = network)) + -->
+<!--   geom_boxplot() + -->
+<!--   #stat_compare_means(aes(group = hit_call),method = "anova", label.y = 6)+        # Add global annova p-value -->
+<!--   #stat_compare_means(aes(group = hit_call),label = "p.signif", method = "t.test", -->
+<!--                     # ref.group = ".all.") + -->
+<!--   scale_colour_manual(values = c("COSMOS" = "darkblue", "COSMOS_new" = "darkmagenta", "GSK" = "darkorange2")) + -->
+<!--   facet_wrap(~network)+ -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1)) -->
+<!-- p_TPP_connectivity_filt -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #save.image(file = "results/210825_O1M3_image.RData") -->
+<!-- ``` -->
+
+
+<!-- # T47D -->
+
+<!-- ## Load data -->
+
+<!-- ```{r, message =F} -->
+<!-- TPP2D_T47D <- read_tsv("data/TPP/2DTPP_T47D_2021-03-24.txt") -->
+
+<!-- load("data/210902_allTPPscores_T47D.RData") -->
+<!-- load("results/210902_viper_footprints.RData") -->
+<!-- load("data/DE_analyses/220421_DEmultiomics_Olaparib_gathered") -->
+
+<!-- load("data/KSN.RData") -->
+<!-- load("data/dorothea.RData") -->
+<!-- phosphoproteomics <- read_tsv("data/DE_analyses/LIMMA_results_PhosphoFollowUp_Phospho.txt") -->
+<!-- load("results/210826_limma_T47D_correctedphospho.RData") -->
+
+<!-- ``` -->
+
+
+<!-- ## Hit call evaluation -->
+
+<!-- ### Overlap comparison -->
+
+<!-- Compare overlaps between footprinting proteins and TPP hit calling strategies. -->
+
+<!-- * little overlap of footprinting and TPP derived proteins (2-3 proteins) -->
+<!-- * different number of hits per hit calling strategy -->
+
+<!-- Extract footprinting information -->
+
+<!-- ```{r} -->
+<!-- viper_T47D <- bind_rows("phospho" = viperRes_phospho_corrected, "trans" = viperRes_trans, .id = "type") %>% -->
+<!--   filter(condition_long== "T47D_48h_10uM") -->
+<!-- ``` -->
+
+<!-- Comparison with TPP hits. -->
+
+<!-- ```{r} -->
+<!-- footprints_T47D_ola_hits <- viper_T47D %>% -->
+<!--   group_by(type) %>% -->
+<!--   top_n(40, wt = absNES) %>% -->
+<!--   #filter(!(type == "proteomic" & pvalue_adj > 0.01)) %>% -->
+<!--   mutate(hit_call = "footprinting", -->
+<!--          mode = ifelse(NES > 0, "stabilized", "destabilized"), -->
+<!--          score = NES) %>% -->
+<!--   dplyr::select(gene_name = regulator, hit_call, mode, score, type) -->
+
+<!-- hit_comparisons_T47D <- bind_rows(footprints_T47D_ola_hits, TPP_all_scores_T47D) %>% -->
+<!--   mutate(type = ifelse(is.na(type), "TPP", type)) %>% -->
+<!--   dplyr::select(-representative) %>% -->
+<!--   group_by(gene_name) %>% -->
+<!--   mutate(n_scores = n())%>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   mutate(n_proteins = n()) -->
+
+
+<!-- feature_order <- hit_comparisons_T47D %>% -->
+<!--   dplyr::select(hit_call, n_proteins) %>% -->
+<!--   distinct(hit_call, .keep_all = T) %>% -->
+<!--   arrange(n_proteins) -->
+
+<!-- protein_order <- hit_comparisons_T47D %>% -->
+<!--   ungroup() %>% -->
+<!--   dplyr::select(gene_name, n_scores) %>% -->
+<!--   distinct(gene_name, .keep_all = T) %>% -->
+<!--   arrange(-n_scores) -->
+
+
+<!-- p_comp_T47D <-   ggplot(hit_comparisons_T47D, aes(y = factor(hit_call, levels = feature_order$hit_call), -->
+<!--                                   x = factor(gene_name, levels = protein_order$gene_name))) + -->
+<!--   geom_raster(aes(fill=mode), alpha = 0.6) + -->
+<!--   scale_fill_manual(values = c("indianred1",  "darkgoldenrod1", "seagreen3", "deepskyblue3")) + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank())+ -->
+<!--   labs(x = "proteins", y = "", title = "TPP strategy comparison") -->
+<!-- p_comp_T47D -->
+
+<!-- p_comp_filt_T47D <-   ggplot(filter(hit_comparisons_T47D, hit_call == "TPPFstatistic" | hit_call == "TPPmonotony" | hit_call == "footprinting"), -->
+<!--                         aes(y = factor(hit_call, levels = feature_order$hit_call), -->
+<!--                                   x = factor(gene_name, levels = protein_order$gene_name))) + -->
+<!--   geom_raster(aes(fill=mode), alpha = 0.6) + -->
+<!--   scale_fill_manual(values = c("indianred1",  "darkgoldenrod1", "seagreen3", "deepskyblue3")) + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank())+ -->
+<!--   labs(x = "proteins", y = "", title = "TPP strategy comparison") -->
+<!-- p_comp_filt_T47D -->
+
+<!-- hit_comparisons_filtered_T47D <- filter(hit_comparisons_T47D, hit_call == "TPPFstatistic" | hit_call == "TPPmonotony" | hit_call == "footprinting")%>% -->
+<!--   group_by(gene_name) %>% -->
+<!--   mutate(n_scores = n()) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- #install.packages("ggvenn") -->
+<!-- library(ggvenn) -->
+
+<!-- TPP_for_venn_T47D <- hit_comparisons_T47D %>% -->
+<!--   dplyr::select(gene_name, hit_call) %>% -->
+<!--   dcast(gene_name ~ hit_call)  %>% -->
+<!--   mutate_at(.vars = vars(c(2:7)), as.logical) %>% -->
+<!--   dplyr::select(value = gene_name, TPPclassical, TPPmonotony,TPPstability, footprinting, TPPwindowSG, TPPwindow) #TPPFstatistic -->
+
+<!-- p_venn1_T47D <- ggplot(TPP_for_venn_T47D) + -->
+<!--     geom_venn(aes(A = `TPPwindow`, -->
+<!--                   B = `TPPwindowSG`, -->
+<!--                   C = `TPPmonotony`, -->
+<!--                   D = `TPPstability`), -->
+<!--               fill_color = c("dodgerblue4", "darkmagenta", "darkorange2", "firebrick2"), -->
+<!--               fill_alpha = 0.3, -->
+<!--               stroke_alpha = 0, -->
+<!--               set_name_size = 3, -->
+<!--               show_percentage = FALSE) + -->
+<!--   coord_fixed() + -->
+<!--   theme_void() -->
+<!-- p_venn1_T47D -->
+
+<!-- p_venn2_T47D <- ggplot(TPP_for_venn_T47D) + -->
+<!--     geom_venn(aes(A = `TPPclassical`, -->
+<!--                   B = `footprinting`, -->
+<!--                   C = `TPPmonotony`), -->
+<!--               fill_color = c("dodgerblue4", "darkmagenta", "darkorange2", "firebrick2"), -->
+<!--               fill_alpha = 0.3, -->
+<!--               stroke_alpha = 0, -->
+<!--               set_name_size = 3, -->
+<!--               show_percentage = FALSE) + -->
+<!--   coord_fixed() + -->
+<!--   theme_void() -->
+<!-- p_venn2_T47D -->
+<!-- ``` -->
+
+
+<!-- ### Functional annotation -->
+
+<!-- Annotate with information of Uniprot. -->
+
+<!-- * Molecular Function: footprintig results clearly show the enzyme characteristics iof the proteins (Kinase, Transferase,DNA binding activator, repressor) -->
+
+<!-- * Cellular compartment: Mainly cytosol and nucleus, TPP proteins also in membrane and ER -->
+
+<!-- * PTM: similar PTM profile, phosphorylation, acetylation and ubiquitinylation are the most prominent PTMs -->
+
+<!-- ```{r, message = F} -->
+<!-- ids <- mapIds(org.Hs.eg.db, hit_comparisons_T47D$gene_name, 'UNIPROT', 'SYMBOL') -->
+
+
+<!-- # map_uniprot_ids(ids, con = con) -->
+
+<!-- # Get keyword table and the type of the keyword -->
+<!-- keyw <- tbl(con, in_schema("ANNOTATION", "UNIPROT_KEYWORD")) -->
+<!-- keywt <- tbl(con, in_schema("ANNOTATION", "UNIPROT_KEYWORDTYPE")) -->
+
+<!-- # Joint tables, filter for Uniprot accessions and collect results -->
+<!-- functional_description_T47D <- keyw %>% -->
+<!--   left_join(keywt) %>% -->
+<!--   filter(ACCESSION %in% ids) %>% -->
+<!--   collect() %>% -->
+<!--   mutate(gene_name = mapIds(org.Hs.eg.db, ACCESSION, 'SYMBOL', 'UNIPROT')) -->
+
+<!-- TPP_hits_functional_anno_T47D <- hit_comparisons_T47D %>% -->
+<!--   left_join(functional_description_T47D, by = "gene_name") -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, message = F} -->
+
+<!-- p_TPP_hits_functional_anno_PTM_T47D <- TPP_hits_functional_anno_T47D %>% -->
+<!--   filter(CATEGORY == "PTM") %>% -->
+<!--   group_by(KEYWORD) %>% -->
+<!--   filter(n() > 10) %>% -->
+<!--   ggplot(aes(x = hit_call, fill = KEYWORD)) + -->
+<!--   geom_bar(stat = "count", position = position_stack()) + -->
+<!--   theme_bw(base_size = 12)+ -->
+<!--   theme(axis.text.x = element_text(angle=45, hjust=1, vjust =1)) + -->
+<!--   labs(title="Uniprot PTM annotations per hit calling strategy") -->
+<!-- p_TPP_hits_functional_anno_PTM_T47D -->
+
+<!-- p_TPP_hits_functional_anno_MF_T47D <- TPP_hits_functional_anno_T47D %>% -->
+<!--   filter(CATEGORY == "Molecular function") %>% -->
+<!--   group_by(KEYWORD) %>% -->
+<!--   filter(n() > 10) %>% -->
+<!--   ggplot(aes(x = hit_call, fill = KEYWORD)) + -->
+<!--   geom_bar(stat = "count", position = position_stack())+ -->
+<!--   theme_bw(base_size = 12)+ -->
+<!--   theme(axis.text.x = element_text(angle=45, hjust=1, vjust =1)) + -->
+<!--   labs(title="Uniprot Molecular Function annotations per hit calling strategy") -->
+<!-- p_TPP_hits_functional_anno_MF_T47D -->
+
+<!-- p_TPP_hits_functional_anno_CC_T47D <- TPP_hits_functional_anno_T47D %>% -->
+<!--   filter(CATEGORY == "Cellular component") %>% -->
+<!--   group_by(KEYWORD) %>% -->
+<!--   filter(n() > 10) %>% -->
+<!--   ggplot(aes(x = hit_call, fill = KEYWORD)) + -->
+<!--   geom_bar(stat = "count", position = position_stack())+ -->
+<!--   theme_bw(base_size = 12)+ -->
+<!--   labs(title="Uniprot Cellular Component annotations per hit calling strategy") -->
+<!-- p_TPP_hits_functional_anno_CC_T47D -->
+
+<!-- ``` -->
+
+<!-- ### Proteomic signal -->
+
+<!-- Compare TPP information with expression proteomics data to assess changes in protein abundance and stability. -->
+
+<!-- * footprinting is independent of expression changes -->
+<!-- * TPP strategies recover abundance and stability changes -->
+<!-- * Strategies which resolve abundance changes work well (F-statistic) -->
+
+<!-- ```{r} -->
+<!-- # filter proteomics data -->
+<!-- proteomics_filtered_FCs_T47D <- proteomics_ola %>% -->
+<!--   filter(condition_long == "T47D_48h_10uM") %>% -->
+<!--   mutate(significance = ifelse(adj.P.Val < 0.05, "significant", "not significant")) %>% -->
+<!--   dplyr::select(GeneSymbol, logFC, significance) -->
+
+<!-- proteomics_hits_T47D <- proteomics_filtered_FCs_T47D %>% -->
+<!--   filter(significance == "significant") -->
+
+<!-- # join with TPP results -->
+<!-- proteomics_filtered_FCs_T47D <- proteomics_filtered_FCs_T47D  %>% -->
+<!--   full_join(hit_comparisons_T47D, by = c("GeneSymbol" = "gene_name")) -->
+
+<!-- proteomics_filtered_FCs_T47D <- proteomics_filtered_FCs_T47D%>% -->
+<!--   mutate(hit_call = ifelse(is.na(hit_call), "no hit", hit_call), -->
+<!--          mode = ifelse(is.na(mode), "expressed", mode), -->
+<!--          logFC = ifelse(is.na(logFC), 0, logFC), -->
+<!--          proteomics_significance = ifelse(is.na(significance), "no signal", significance)) -->
+
+<!-- proteomics_comparison_T47D <- ggplot(proteomics_filtered_FCs_T47D, aes(x = hit_call, y = logFC, colour = mode, shape = proteomics_significance)) + -->
+<!--   geom_point(size = 3)+ -->
+<!--   geom_jitter(width = 0.1) + -->
+<!--   #geom_text_repel(aes(label = GeneSymbol), colour = "grey", size = 4) + -->
+<!--   scale_colour_manual(values = c("indianred1",  "darkgoldenrod1", "grey", "seagreen3", "deepskyblue3")) + -->
+<!--   scale_shape_manual(values = c(16, 17, 8)) + -->
+<!--   theme_bw(base_size = 12) + -->
+<!--   theme(axis.text.x = element_text(angle = 45, hjust =1, vjust=1)) -->
+<!-- proteomics_comparison_T47D -->
+
+<!-- proteomics_comparison_boxplot_T47D <- ggplot(proteomics_filtered_FCs_T47D, aes(x = hit_call, y = logFC, colour = mode, shape = proteomics_significance)) + -->
+<!--   geom_boxplot()+ -->
+<!--   geom_point(position=position_jitterdodge(jitter.width = 0.1)) + -->
+<!--   scale_colour_manual(values = c("indianred1",  "darkgoldenrod1", "grey", "seagreen3", "deepskyblue3")) + -->
+<!--   theme_bw(base_size = 12) + -->
+<!--   theme(axis.text.x = element_text(angle = 45, hjust =1, vjust=1)) + -->
+<!--   labs(y = "log2FC EP") -->
+<!-- proteomics_comparison_boxplot_T47D -->
+<!-- ``` -->
+
+
+
+
+<!-- ### Correlations -->
+
+
+<!-- ```{r} -->
+
+<!-- P_EP_correlation_T47D <- proteomics_filtered_FCs_T47D %>% -->
+<!--   filter(hit_call != "no hit" ) %>% -->
+<!--   ggplot(aes(x = logFC, y = score, colour = mode)) + -->
+<!--   geom_point() + -->
+<!--   #geom_text_repel(aes(label = GeneSymbol), size = 2.5, colour = "black") + -->
+<!--   stat_smooth(method = "lm", col = "darkgray") + -->
+<!--    scale_colour_manual(values = c("indianred1",  "darkgoldenrod1", "seagreen3", "deepskyblue3")) + -->
+<!--   theme_bw(base_size = 12) + -->
+<!--   facet_wrap(~hit_call, scales = "free_y") + -->
+<!--   labs(title="Correlation with Expression Proteomics data", x = "log2FC EP") -->
+<!-- P_EP_correlation_T47D -->
+
+
+<!-- transcriptomics_filtered_T47D <- transcriptomics_ola %>% -->
+<!--   filter(condition_long == "T47D_48h_10uM") %>% -->
+<!--   inner_join(TPP_all_scores_T47D, by = c("GeneSymbol" = "gene_name")) -->
+
+<!-- P_trans_correlation_T47D <- transcriptomics_filtered_T47D %>% -->
+<!--    filter(hit_call != "no hit" ) %>% -->
+<!--   ggplot(aes(x = logFC, y = score)) + -->
+<!--   geom_point() + -->
+<!--   stat_smooth(method = "lm", col = "red") + -->
+<!--   theme_bw(base_size = 12) + -->
+<!--   facet_wrap(~hit_call, scales = "free_y") + -->
+<!--   labs(title="Correlation with Transcriptomics data") -->
+<!-- P_trans_correlation_T47D -->
+
+<!-- ``` -->
+
+
+<!-- ### Phosphorylation -->
+
+<!-- Assess changes on phosphoproteomic level and their impact on TPP proteins -->
+
+<!-- ```{r, fig.width=12, fig.height=8} -->
+<!-- affected_phosphosites_T47D <- limma_T47D_correctedphospho %>% -->
+<!--   filter(condition == "T47D_48h_10" & -->
+<!--            comparison == "Ola" ) %>% -->
+<!--   mutate(gene_name = mapIds(org.Hs.eg.db, representative, 'SYMBOL', 'UNIPROT')) %>% -->
+<!--   dplyr::select(ID, gene_name, logFC, adj.P.Val) -->
+
+<!-- TPP_hits_phosphositelevel_T47D <- inner_join(hit_comparisons_T47D, affected_phosphosites_T47D, by = "gene_name") %>% -->
+<!--   filter(hit_call != "footprinting") %>% -->
+<!--   mutate(significance = ifelse(adj.P.Val < 0.05, "significant", "not significant")) -->
+
+
+<!-- volcano_affected_psites_T47D <- ggplot(TPP_hits_phosphositelevel_T47D, -->
+<!--                                   aes(x = logFC, y = -log10(adj.P.Val))) + -->
+<!--   geom_point(aes(colour = significance))+ -->
+<!--   #geom_text_repel(label = TPP_hits_phosphositelevel_T47D$label, size = 3, colour = "gray2") + -->
+<!--   scale_colour_manual(values = c("grey", "indianred1")) + -->
+<!--    facet_wrap(~hit_call) + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(legend.position = "none") + -->
+<!--   labs(title = "Phosphorylated TPP proteins") -->
+<!-- volcano_affected_psites_T47D -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- n_proteins_T47D <- hit_comparisons_T47D %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   summarise(n_proteins = n()) %>% -->
+<!--   arrange(n_proteins) -->
+
+<!-- # all psites -->
+<!-- n_psites_T47D <- TPP_hits_phosphositelevel_T47D %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   summarise(n_psites = n()) %>% -->
+<!--   left_join(n_proteins_T47D, by = "hit_call") %>% -->
+<!--   arrange(n_psites) -->
+
+<!-- kable(n_psites_T47D) -->
+
+<!-- # significant psites -->
+<!-- n_psites_sig_T47D <- TPP_hits_phosphositelevel_T47D %>% -->
+<!--   filter(adj.P.Val < 0.05) %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   summarise(n_psites = n()) %>% -->
+<!--   left_join(n_proteins_T47D, by = "hit_call") %>% -->
+<!--   arrange(n_psites) -->
+
+<!-- kable(n_psites_sig_T47D) -->
+
+<!-- ``` -->
+
+<!-- ### Kinase targets -->
+
+<!-- Assess if TPP derived proteins map downstream of a regulator kinase. -->
+
+<!-- ```{r, fig.width=12, fig.height=8} -->
+<!-- kinases_downstream_T47D <- filter(KSN, enzyme_genesymbol %in% footprints_T47D_ola_hits$gene_name) %>% -->
+<!--   mutate(substrates = str_extract(substrate_genesymbol, "^.*?(?=_)")) %>% -->
+<!--   dplyr::select(enzyme_genesymbol, substrates) %>% -->
+<!--   distinct(enzyme_genesymbol, substrates) -->
+
+<!-- TPP_kinase_downstream_overlap_T47D <- inner_join(hit_comparisons_T47D, kinases_downstream_T47D, by = c("gene_name" = "substrates")) %>% -->
+<!--   group_by(hit_call, enzyme_genesymbol) %>% -->
+<!--   mutate(n_enz = n()) %>% -->
+<!--   group_by(hit_call, gene_name) %>% -->
+<!--   mutate(n_TPP = n()) %>% -->
+<!--   filter(hit_call != "footprinting") -->
+
+
+<!-- p_kinase_targets_T47D <- ggplot(TPP_kinase_downstream_overlap_T47D, -->
+<!--                            aes(x = reorder(enzyme_genesymbol, -n_enz), -->
+<!--                                y = reorder(gene_name, n_TPP), -->
+<!--                                group = gene_name, -->
+<!--                                colour = "indianred1")) + #reorder(gene_name, n_TPP))) + -->
+<!--   geom_point(size=3) + -->
+<!--   geom_line() + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(legend.position = "none", -->
+<!--         axis.text.x = element_text(angle = 90, hjust =1, vjust = 0.5, size=8), -->
+<!--         axis.text.y = element_text(size=8)) + -->
+<!--   #theme(axis.text.x = element_blank()) + -->
+<!--   facet_wrap(~hit_call, ncol =3, scales = "free_y") + -->
+<!--   labs(x = "kinase", -->
+<!--        y= "TPP protein", -->
+<!--        title = "TPP hits downstream regulator kinases") -->
+<!-- p_kinase_targets_T47D -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- n_kinasetargets_T47D <- TPP_kinase_downstream_overlap_T47D %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   summarise(n_kinasetargets = n()) %>% -->
+<!--   arrange(n_kinasetargets) -->
+
+<!-- kable(n_kinasetargets_T47D) -->
+<!-- ``` -->
+
+<!-- ### TF targets -->
+
+<!-- Assess if TPP derived proteins map downstream of a regulator kinase. -->
+
+<!-- * Note: viper found a lot more significant TF regulators than othe methods which is surely biasing the showed results -->
+
+<!-- ```{r, fig.width=12, fig.height=8} -->
+<!-- footprint_TFs_T47D <- dorothea %>% -->
+<!--   filter(source_genesymbol %in% footprints_T47D_ola_hits$gene_name) -->
+
+<!-- TPP_TF_downstream_overlap_T47D <- inner_join(hit_comparisons_T47D, footprint_TFs_T47D, by = c("gene_name" = "target_genesymbol"))%>% -->
+<!--   group_by(hit_call, source_genesymbol) %>% -->
+<!--   mutate(n_enz = n()) %>% -->
+<!--   group_by(hit_call, gene_name) %>% -->
+<!--   mutate(n_TPP = n()) %>% -->
+<!--   filter(hit_call != "footprinting") -->
+
+<!-- #%>% -->
+<!--  # mutate(hit_call = ifelse(is.na(hit_call), "affected", hit_call)) -->
+
+<!-- p_TF_targets_T47D <- ggplot(TPP_TF_downstream_overlap_T47D, -->
+<!--                            aes(x = reorder(source_genesymbol, -n_enz), -->
+<!--                                y = reorder(gene_name, n_TPP), -->
+<!--                                group = gene_name, -->
+<!--                                colour = mode)) + -->
+<!--   geom_point(size=3) + -->
+<!--   geom_line() + -->
+<!--   scale_colour_manual(values = c("indianred1",  "darkgoldenrod1", "seagreen3", "deepskyblue3")) + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1)) + -->
+<!--   facet_wrap(~hit_call, scales = "free_y") + -->
+<!--   labs(x = "TF", -->
+<!--        y= "TPP protein", -->
+<!--        title = "TPP hits in viper targets") -->
+<!-- p_TF_targets_T47D -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- n_TFtarget_T47D <- TPP_TF_downstream_overlap_T47D %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   summarise(n_TFtarget = n()) %>% -->
+<!--   left_join(n_proteins_T47D, by = "hit_call") %>% -->
+<!--   arrange(n_TFtarget) -->
+
+<!-- kable(n_TFtarget_T47D) -->
+<!-- ``` -->
+
+
+
+<!-- ### DNA repair pathway -->
+
+<!-- Check coverage of DNA damage and repair as well as cell cycle signaling and the contribution of different protein types. -->
+
+<!-- * pathway is enriched in footprinting and TPP proteins -->
+<!-- * TPP proteins complement footprinting information -->
+
+<!-- ```{r, fig.width=12} -->
+
+<!-- pathways <- get.maps()%>% -->
+<!--   filter(str_detect(map_name, c("DNA damage|Cell cycle|DNA repair"))) -->
+
+<!-- pathway_members <- get.map.genes(pathways$map_id) -->
+
+
+<!-- functional_coverage_TPP_T47D <- inner_join(pathway_members,hit_comparisons_T47D,  by = c("genesymbol"="gene_name") ) %>% -->
+<!--   group_by(genesymbol) %>% -->
+<!--   mutate(n_scores = n()) %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   mutate(n_protein = n()) %>% -->
+<!--   ungroup() -->
+
+<!-- hitcall_order <- functional_coverage_TPP_T47D %>% -->
+<!--   dplyr::select(hit_call, n_protein) %>% -->
+<!--   distinct(hit_call, .keep_all = T) %>% -->
+<!--   arrange(n_protein) -->
+
+<!-- protein_order <- functional_coverage_TPP_T47D %>% -->
+<!--   dplyr::select(genesymbol, n_scores) %>% -->
+<!--   distinct(genesymbol, .keep_all = T) %>% -->
+<!--   arrange(-n_scores) -->
+
+
+<!-- p_DNArepair_T47D <- ggplot(functional_coverage_TPP_T47D, aes(x = factor(genesymbol, levels = protein_order$genesymbol), -->
+<!--                                                      y = factor(hit_call, levels = hitcall_order$hit_call))) + -->
+<!--   geom_raster(aes(fill=mode), alpha = 0.6)+ -->
+<!--   scale_fill_manual(values = c("indianred1", "darkgoldenrod1",  "seagreen3", "deepskyblue3")) + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1, size = 9)) + -->
+<!--   labs(x = "protein", -->
+<!--        y= "", -->
+<!--        title = "DNA damage and repair pathway coverage") -->
+<!-- p_DNArepair_T47D -->
+<!-- ``` -->
+
+<!-- ### Summary -->
+
+<!-- ```{r} -->
+
+<!-- transcriptomics_hits_T47D <- transcriptomics_ola %>% -->
+<!--   filter(condition_long == "T47D_48h_10uM" & adj.P.Val < 0.05) -->
+
+
+<!-- summary_T47D <- hit_comparisons_T47D%>% -->
+<!--   mutate(footprinitng_hit = ifelse(gene_name %in% footprints_T47D_ola_hits$gene_name, "affected", "not affected"))%>% -->
+<!--   mutate(kinase_target = ifelse(gene_name %in% TPP_kinase_downstream_overlap_T47D$gene_name, "affected", "not affected")) %>% -->
+<!--   mutate(TF_target = ifelse(gene_name %in% TPP_TF_downstream_overlap_T47D$gene_name,"affected", "not affected")) %>% -->
+<!--    mutate(phosphorylation = ifelse(gene_name %in% TPP_hits_phosphositelevel_T47D$gene_name, "affected", "not affected")) %>% -->
+<!--    mutate(DNApathway = ifelse(gene_name %in% functional_coverage_TPP_T47D$genesymbol, "affected", "not affected")) %>% -->
+<!--   mutate(significant_transcript = ifelse(gene_name %in% transcriptomics_hits_T47D$GeneSymbol, "affected", "not affected")) %>% -->
+<!--   mutate(significant_proteomics = ifelse(gene_name %in% proteomics_hits_T47D$GeneSymbol, "affected", "not affected"))%>% -->
+<!--   dplyr::select(-n_scores, - n_proteins, -pval, -p_adj) %>% -->
+<!--   melt(id.vars = c("gene_name", "hit_call", "mode", "score","type")) %>% -->
+<!--   group_by(gene_name) %>% -->
+<!--   mutate(n_scores = sum(value  != "not affected")) %>% -->
+<!--   ungroup() %>% -->
+<!--    mutate(value = factor(value, levels = c("affected", "not affected"))) %>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   mutate(n_proteins = sum(value  != "not affected")) %>% -->
+<!--   ungroup() -->
+
+<!-- variable_order <- summary_T47D %>% -->
+<!--   dplyr::select(variable, n_proteins) %>% -->
+<!--   distinct(variable, .keep_all = T) %>% -->
+<!--   arrange(n_proteins) -->
+
+<!-- protein_order <- summary_T47D %>% -->
+<!--   dplyr::select(gene_name, n_scores) %>% -->
+<!--   distinct(gene_name, n_scores, .keep_all = T) %>% -->
+<!--   arrange(-n_scores) -->
+
+
+<!-- summary_T47D <- filter(summary_T47D, hit_call != "footprinting") -->
+
+
+<!-- p_summary_T47D <-   ggplot(summary_T47D, aes(y = factor(variable, levels = variable_order$variable), -->
+<!--                                    x = factor(gene_name, levels = protein_order$gene_name))) + -->
+<!--   geom_raster(aes(fill=value), alpha = 0.6)+ -->
+<!--   scale_fill_manual(values = c( "darkgoldenrod1", "deepskyblue3")) + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(axis.text.x = element_blank(), axis.ticks.x=element_blank()) + -->
+<!--   facet_wrap(~hit_call, scales = "free_x") + -->
+<!--   labs(x = "TPP hit", -->
+<!--        y= "feature", -->
+<!--        title = "TPP hit summary") -->
+<!-- p_summary_T47D -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- summary_long_T47D <- summary_T47D %>% -->
+<!--   dplyr::select(gene_name, hit_call, mode) %>% -->
+<!--   bind_rows(summary_T47D %>% dplyr::select(gene_name, hit_call = variable, mode = value)) %>% -->
+<!--   filter(mode != "not affected" & !(hit_call %in% c("TF_target", "footprinitng_hit", "kinase_target"))) %>% -->
+<!--   mutate(mode = ifelse(hit_call == "footprinting", "affected", mode)) %>% -->
+<!--   group_by(gene_name) %>% -->
+<!--   mutate(n_scores = n())%>% -->
+<!--   group_by(hit_call) %>% -->
+<!--   mutate(n_proteins = n()) -->
+
+<!-- feature_order <- summary_long_T47D %>% -->
+<!--   dplyr::select(hit_call, n_proteins) %>% -->
+<!--   distinct(hit_call, .keep_all = T) %>% -->
+<!--   arrange(n_proteins) -->
+
+<!-- protein_order <- summary_long_T47D %>% -->
+<!--   ungroup() %>% -->
+<!--   dplyr::select(gene_name, n_scores) %>% -->
+<!--   distinct(gene_name, .keep_all = T) %>% -->
+<!--   arrange(-n_scores) -->
+
+<!-- p_comp_T47D <-   ggplot(summary_long_T47D, aes(y = factor(hit_call, levels = feature_order$hit_call), -->
+<!--                                   x = factor(gene_name, levels = protein_order$gene_name))) + -->
+<!--   geom_raster(aes(fill=mode), alpha = 0.6) + -->
+<!--   scale_fill_manual(values = c("stabilized" = "deepskyblue3", -->
+<!--                               "destabilized" = "darkgoldenrod1", -->
+<!--                               "increased abundance" = "seagreen3", -->
+<!--                               "decreased abundance" = "indianred1", -->
+<!--                               "affected" = "hotpink3")) + -->
+<!--   theme_bw(base_size = 15) + -->
+<!--   theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank())+ -->
+<!--   labs(x = "proteins", y = "", title = "TPP strategy comparison") -->
+<!-- p_comp_T47D -->
+<!-- ``` -->
+
+
