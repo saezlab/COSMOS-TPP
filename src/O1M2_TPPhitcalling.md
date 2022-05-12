@@ -11,7 +11,8 @@ output:
 # General settings
 
 
-```{r setup}
+
+```r
 knitr::opts_chunk$set(
   echo = TRUE,
   warning = FALSE,
@@ -28,7 +29,8 @@ knitr::opts_knit$set(root.dir = "C:/Users/burtsche/Documents/COSMOS-TPP_paper")
 
 ## Load packages
 
-```{r, message=F, warning =F}
+
+```r
 library(tidyverse)
 library("reshape2")
 library(OmnipathR)
@@ -51,7 +53,8 @@ group_by <- dplyr::group_by
 
 ## Functions
 
-```{r RPA function, message=F, warning =F}
+
+```r
 GSE_RPA <- function(geneList, universe) {
   geneList <- mapIds(org.Hs.eg.db, geneList, "ENTREZID", "SYMBOL")
   universe <- mapIds(org.Hs.eg.db, universe,'ENTREZID','SYMBOL')
@@ -70,7 +73,8 @@ GSE_RPA <- function(geneList, universe) {
 ```
 
 
-```{r}
+
+```r
 values_effect <- c(
   "stabilized" = "darkcyan",
   "destabilized" = "aquamarine3",
@@ -81,7 +85,8 @@ values_effect <- c(
 
 ## Load data
 
-```{r, message=F, warning=F}
+
+```r
 TPP2D_UWB <- read.table("data/2DTPP_UWB_Ola_2021-03-24.txt", row.names = 1, sep = "\t")
 phosphoproteomics <- read_tsv("data/LIMMA_results_PhosphoFollowUp_Phospho.txt")
 
@@ -89,13 +94,12 @@ phosphoproteomics <- read_tsv("data/LIMMA_results_PhosphoFollowUp_Phospho.txt")
 load("data/KSN.RData")
 load("data/210802_limma_UWB1.289_initialdataset_correctedphospho.RData")
 load("data/220510_viper_footprints.RData")
-
-
 ```
 
 Aggregate and filter TPP UWB data to considered condition and quality criteria.
 
-```{r}
+
+```r
 proteins_merged <- TPP2D_UWB %>%
   filter(condition == "Olaparib 24h") %>%
   # convert temperature to numeric
@@ -120,7 +124,8 @@ proteins_merged <- TPP2D_UWB %>%
 
 The permutation takes one night!!! Don't run this chunk per default (eval=F).
 
-```{r, eval = F}
+
+```r
 TPPstatistical_input <- list()
 for (file in c(
   "TPPraw_uwb_ola24_48.csv", "TPPraw_uwb_ola24_49.csv", "TPPraw_uwb_ola24_50.csv",
@@ -219,7 +224,8 @@ save(TPPFstatistic_hits, file = "results/211007_TPPfstathits_UWB24h")
 
 Load the results to avoid recalculation
 
-```{r}
+
+```r
 load("data/211007_TPPfstathits_UWB24h.RData")
 
 TPPFstatistic_hits_adap <- TPPFstatistic_hits %>%
@@ -237,14 +243,16 @@ TPPFstatistic_hits_adap <- TPPFstatistic_hits %>%
   ) %>%
   dplyr::select(representative, gene_name, hit_call, mode, score, pval, p_adj)
 ```
-```{r number_TPPhits}
+
+```r
 ggplot(TPPFstatistic_hits_adap, aes(x= mode, fill=mode)) +
   geom_bar() +
   scale_fill_manual(values = values_effect) +
   cowplot::theme_cowplot() *
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
-
 ```
+
+![](O1M2_TPPhitcalling_files/figure-html/number_TPPhits-1.png)<!-- -->
 
 
 # TPP hit evaluation Evaluation
@@ -253,7 +261,8 @@ ggplot(TPPFstatistic_hits_adap, aes(x= mode, fill=mode)) +
 
 Check pathway enrichment for de/stabilized hits
 
-```{r}
+
+```r
 pathway_check_input <- TPPFstatistic_hits_adap %>%
   filter(p_adj < 0.05)
 
@@ -279,8 +288,8 @@ pathway_enrichment_significant <- pathway_enrichment_unnest %>%
 
 Plot top 10 pathways for stability score pathway enrichment.
 
-```{r toppathways, fig.width=7, fig.height=4}
 
+```r
 # extract top10 pathways for plot
 top_TPP_pathways_TPPFstatistic <- pathway_enrichment_significant %>%
   as.data.frame() %>%
@@ -296,13 +305,16 @@ p_pathway_UWB1.289_TPPFstatistic <- ggplot(top_TPP_pathways_TPPFstatistic, aes(y
 p_pathway_UWB1.289_TPPFstatistic
 ```
 
+![](O1M2_TPPhitcalling_files/figure-html/toppathways-1.png)<!-- -->
+
 
 
 ## Phosphorylation
 
 Assess changes on phosphoproteomic level and their impact on TPP proteins
 
-```{r}
+
+```r
 psites <- phosphoproteomics %>%
   mutate(
     gene_name = mapIds(org.Hs.eg.db, representative, "SYMBOL", "UNIPROT"),
@@ -329,7 +341,8 @@ TPP_hits_phosphositelevel <- inner_join(TPPFstatistic_hits_adap, psites, by = "g
   mutate(significance = ifelse(adj.P.Val < 0.05, "significant", "not significant"))
 ```
 
-```{r TPP phosphorylation}
+
+```r
 volcano_affected_psites <- ggplot(TPP_hits_phosphositelevel,
                                   aes(x = logFC, y = -log10(adj.P.Val))) +
   geom_hline(yintercept = 0, colour = "gray28")+
@@ -341,11 +354,14 @@ volcano_affected_psites <- ggplot(TPP_hits_phosphositelevel,
 volcano_affected_psites
 ```
 
+![](O1M2_TPPhitcalling_files/figure-html/TPP phosphorylation-1.png)<!-- -->
+
 # TPP activities
 
 To estimate the activity of TPP hits we searched for consistent edges between upstream kinases identified by viper and downstream TPP proteins.
 
-```{r}
+
+```r
 # load viper results
 viper_phospho_top <- viperRes_phospho_corrected %>% 
   group_by(condition_long) %>% 
@@ -357,7 +373,8 @@ viper_trans_top <- viperRes_trans %>%
 ```
 
 
-```{r}
+
+```r
 # filter prior knowledge links
 annoated_ptms_measured <- KSN %>%
   separate(substrate_genesymbol, into = c("substrate_genesymbol", "site"), sep = "_") %>% 
@@ -374,7 +391,8 @@ annoated_ptms_measured <- KSN %>%
 
 ## Combine TPP activity information for COSMOS
 
-```{r}
+
+```r
 TPP_cosmos_input <- annoated_ptms_measured %>% 
   # only keep TPP proteins for which there is consistent activation or inactivation information 
   # necessary because we do not no which upstream kinase is potentially regulating the TPP protein
@@ -398,7 +416,8 @@ For example: Kinase (active) --activates_via_S10--> TPP protein (S10 dephosphory
 
 To do this correction we use the abundance corrected version of the phosphoproteomics data because we are interested in exclusively phosphorylation driven changes.
 
-```{r}
+
+```r
 # Format phosphoproteomics data after intensity correction
 psites_corrected <- limma_UWB1.289_initialdataset_correctedphospho %>%
   filter(condition == "BRCA_nul_24h_4" & comparison == "Ola") %>%
@@ -424,7 +443,8 @@ KSN <- KSN %>%
 
 Format footprinting and TPP results and prepare for end object which is exported for COSMOS.
 
-```{r}
+
+```r
 Kinases_input_COSMOS <- sign(viper_phospho_top$NES)
 names(Kinases_input_COSMOS) <- paste0(
   "X",
@@ -440,7 +460,8 @@ TPPFstatistic_hits_adap <- TPPFstatistic_hits_adap %>%
 
 Perform the kinase sign filtering to remove links btw kianses and TPP proteins
 
-```{r}
+
+```r
 # extract kinase targets from TPP proteins
 kinase_targets <- TPPFstatistic_hits_adap %>% 
   filter(gene_name %in% KSN$substrate_protein) %>% 
@@ -476,11 +497,19 @@ KSN_TPPtargets_filt <- KSN_TPPtargets_filt %>%
 KSN_TPPtargets_filt
 ```
 
+```
+##   substrate_genesymbol enzyme_genesymbol sign       logFC kinase_sign
+## 1           CDCA5_T159              CDK1    1 -0.06879140           1
+## 2            CDCA5_S75              CDK1    1 -0.11694422           1
+## 3             RRN3_S44              CDK2    1 -0.02706761           1
+```
+
 
 # Save
 
-```{r, eval = F}
+
+```r
 save(TPP_cosmos_input_final, viper_trans_top, viper_phospho_top, KSN_TPPtargets_filt,
-    file = "results/220512_cosmosinput_merged.RData")
+    file = "220512_cosmosinput_merged.RData")
 ```
 

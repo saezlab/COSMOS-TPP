@@ -11,7 +11,8 @@ output:
 # General settings
 
 
-```{r setup}
+
+```r
 knitr::opts_chunk$set(
   echo = TRUE,
   warning = FALSE,
@@ -29,7 +30,8 @@ knitr::opts_knit$set(root.dir = "C:/Users/burtsche/Documents/COSMOS-TPP_paper")
 
 ## Load packages
 
-```{r, message=F, warning =F}
+
+```r
 library(tidyverse)
 library("reshape2")
 library(OmnipathR)
@@ -54,7 +56,8 @@ group_by <- dplyr::group_by
 
 ## Enrichment function
 
-```{r RPA function, message=F, warning =F}
+
+```r
 GSE_RPA <- function(geneList, universe) {
   geneList <- mapIds(org.Hs.eg.db, geneList, "ENTREZID", "SYMBOL")
   universe <- mapIds(org.Hs.eg.db, universe,'ENTREZID','SYMBOL')
@@ -75,7 +78,8 @@ GSE_RPA <- function(geneList, universe) {
 
 ## Footprinting Functions
 
-```{r}
+
+```r
 df_to_viper_regulon <- function(df) {
   names(df) <- c("feature", "pathway", "sign")
   df <- df[complete.cases(df), ]
@@ -103,7 +107,8 @@ df_to_viper_regulon <- function(df) {
 
 ## Prior knowledge reosurces
 
-```{r}
+
+```r
 # dorothea = OmnipathR::import_dorothea_interactions(dorothea_levels = c("A", "B", "C"))
 # dorothea <- as.data.frame(dorothea) %>%
 #   dplyr::mutate(sign = ifelse(is_inhibition ==1, -1, 1)) %>% 
@@ -143,7 +148,8 @@ KSN_viper <- df_to_viper_regulon(KSN)
 
 ## Load gathered datasets.
 
-```{r}
+
+```r
 load("data/210626_DEmultiomics_Olaparib_gathered_updated")
 ### Corrected phosphodata
 load("data/210802_limma_UWB1.289_initialdataset_correctedphospho.RData")
@@ -153,7 +159,8 @@ load("data/210802_limma_UWB1.289_initialdataset_correctedphospho.RData")
 
 ## Transcriptomics
 
-```{r}
+
+```r
 expression_data_trans <- transcriptomics_ola %>%
   filter(!is.na(GeneSymbol) & !is.na(logFC) & condition_long == "UWB1.289_24h_4uM") %>%
   distinct(EntrezID, condition_long, .keep_all = T) %>%
@@ -163,36 +170,10 @@ expression_data_trans <- transcriptomics_ola %>%
 ```
 
 
-```{r, warning=F, message=F, include = F}
 
-expression_data_trans_wide <- expression_data_trans %>%
-  acast(ID_cosmos ~ condition_long, value.var = "logFC")
 
-dorothea_viper <- df_to_viper_regulon(dorothea)
 
-viperRes_temp <- as.data.frame(
-  viper(
-    eset = expression_data_trans_wide,
-    regulon = dorothea_viper,
-    minsize = 25,
-    adaptive.size = F,
-    eset.filter = F,
-    pleiotropy = F
-  )
-)
-
-viperRes_trans <- viperRes_temp %>%
-  tibble::rownames_to_column("regulator") %>%
-  melt(value.name = "NES", variable.name = "condition_long") %>%
-  mutate(absNES = abs(NES))
-
-viper_trans_top <- viperRes_trans %>% 
-  group_by(condition_long) %>% 
-  top_n(30)
-
-```
-
-```{r TFregulators}
+```r
 p_TFregulators <- viperRes_trans %>%
   group_by(condition_long) %>%
   top_n(n = 10, wt = absNES) %>%
@@ -212,10 +193,13 @@ p_TFregulators <- viperRes_trans %>%
 p_TFregulators
 ```
 
+![](O1M1_footprinting_files/figure-html/TFregulators-1.png)<!-- -->
+
 
 ## Phosphoproteomics after correction
 
-```{r, warning=F, message=F}
+
+```r
 psites <- limma_UWB1.289_initialdataset_correctedphospho %>%
   mutate(
     gene_name = mapIds(org.Hs.eg.db, representative, "SYMBOL", "UNIPROT"),
@@ -240,29 +224,10 @@ psites <- limma_UWB1.289_initialdataset_correctedphospho %>%
 
 
 
-```{r, warning=F, message=F, include = F}
-psites_wide<- psites %>%
-  acast(ID_cosmos ~ condition_long, value.var = "logFC")
 
-viperRes_temp <- as.data.frame(
-  viper(
-    eset = psites_wide,
-    regulon = KSN_viper,
-    minsize = 3,
-    adaptive.size = F,
-    eset.filter = F,
-    pleiotropy = F
-  )
-)
 
-viperRes_phospho_corrected <- viperRes_temp %>%
-  tibble::rownames_to_column("regulator") %>%
-  melt(value.name = "NES", variable.name = "condition_long") %>%
-  mutate(
-    absNES = abs(NES))
-```
 
-```{r Kinases}
+```r
 p_kinaseregulators <- viperRes_phospho_corrected %>%
   group_by(condition_long) %>%
   top_n(n = 10, wt = absNES) %>%
@@ -282,12 +247,15 @@ p_kinaseregulators <- viperRes_phospho_corrected %>%
 p_kinaseregulators
 ```
 
+![](O1M1_footprinting_files/figure-html/Kinases-1.png)<!-- -->
+
 
 # Evaluation in biological context
 
 ## Reactome
 
-```{r}
+
+```r
 pathway_check_input <- bind_rows("phospho" = viperRes_phospho_corrected, "trans" = viperRes_trans, .id = "type") %>%
   group_by(type) %>%
   top_n(n = 20, wt = absNES)
@@ -313,13 +281,53 @@ pathway_enrichment_significant <- pathway_enrichment_unnest %>%
   filter(qvalue < 0.05)
 
 pathway_enrichment_significant %>% filter(type == "trans") %>% select(Description, qvalue, geneID)
+```
+
+```
+## # A tibble: 155 × 4
+## # Groups:   type [1]
+##    type  Description                                               qvalue geneID
+##    <chr> <chr>                                                      <dbl> <chr> 
+##  1 trans "Homo sapiens\r: Transcriptional regulation of granulop… 3.29e-5 CEBPA…
+##  2 trans "Homo sapiens\r: RUNX1 regulates transcription of genes… 7.13e-5 GATA3…
+##  3 trans "Homo sapiens\r: Transcriptional regulation by RUNX1"    7.13e-5 GATA3…
+##  4 trans "Homo sapiens\r: Estrogen-dependent gene expression"     1.03e-4 FOS/F…
+##  5 trans "Homo sapiens\r: Signaling by Interleukins"              1.54e-4 FOS/G…
+##  6 trans "Homo sapiens\r: SUMO E3 ligases SUMOylate target prote… 1.77e-4 TFAP2…
+##  7 trans "Homo sapiens\r: SUMOylation"                            1.77e-4 TFAP2…
+##  8 trans "Homo sapiens\r: Interleukin-4 and Interleukin-13 signa… 2.70e-4 FOS/G…
+##  9 trans "Homo sapiens\r: ESR-mediated signaling"                 2.70e-4 FOS/F…
+## 10 trans "Homo sapiens\r: CLEC7A/inflammasome pathway"            2.70e-4 NFKB1…
+## # … with 145 more rows
+```
+
+```r
 pathway_enrichment_significant %>% filter(type == "phospho") %>% select(Description, qvalue, geneID)
+```
+
+```
+## # A tibble: 165 × 4
+## # Groups:   type [1]
+##    type    Description                                             qvalue geneID
+##    <chr>   <chr>                                                    <dbl> <chr> 
+##  1 phospho "Homo sapiens\r: Regulation of TP53 Activity"          9.99e-8 PRKAA…
+##  2 phospho "Homo sapiens\r: Transcriptional Regulation by TP53"   5.12e-7 PRKAA…
+##  3 phospho "Homo sapiens\r: Regulation of TP53 Activity through … 3.94e-6 PRKAA…
+##  4 phospho "Homo sapiens\r: Regulation of TP53 Degradation"       3.94e-6 AKT2/…
+##  5 phospho "Homo sapiens\r: Regulation of TP53 Expression and De… 3.94e-6 AKT2/…
+##  6 phospho "Homo sapiens\r: Cell Cycle Checkpoints"               6.61e-4 CDK1/…
+##  7 phospho "Homo sapiens\r: TP53 Regulates Transcription of Cell… 6.61e-4 CDK1/…
+##  8 phospho "Homo sapiens\r: G2/M Checkpoints"                     1.07e-3 CDK1/…
+##  9 phospho "Homo sapiens\r: TP53 Regulates Transcription of DNA … 1.28e-3 ATR/A…
+## 10 phospho "Homo sapiens\r: Cellular response to heat stress"     2.93e-3 ATR/A…
+## # … with 155 more rows
 ```
 
 
 # Save results
 
-```{r, eval = F}
+
+```r
 save(viperRes_trans, viperRes_phospho_corrected,
   file = "data/220510_viper_footprints.RData")
 
