@@ -1,5 +1,5 @@
 ---
-title: "O2M3: additional network analysis"
+title: "Analyse result networks"
 output:
   html_document:
     keep_md: yes
@@ -8,7 +8,7 @@ output:
     code_folding: hide
 ---
 
-This script summariyes efforts performed to analzye the role of TPP proteins in COSMOS networks. We saw that the processes in the overall network reflect our expectations (DDR). Here, we move on to a more granular view, by analyzing processes on cluster level.
+This script summarizes efforts performed to analyze the role of TPP proteins in COSMOS networks. We saw that the processes in the overall network reflect our expectations (DDR). We then move on to a more granular view, by analyzing processes on cluster level.
 
 # General settings
 
@@ -24,7 +24,7 @@ knitr::opts_chunk$set(
   eval = TRUE,
   fig.width = 7 * (1 + sqrt(5)) / 2, fig.height = 7
 )
-knitr::opts_knit$set(root.dir = "/Users/miraburtscher/Documents/Bioquant/COSMOS-TPP_paper/")
+knitr::opts_knit$set(root.dir = "C:/Users/burtsche/Documents/COSMOS-TPP_paper")
 ```
 
 ## Packages
@@ -34,7 +34,6 @@ library(tidyverse)
 library(igraph)
 library("reshape2")
 library(OmnipathR)
-library(xlsx)
 library(viridis)
 library(ggrepel)
 options(connectionObserver = NULL)
@@ -42,11 +41,8 @@ library(org.Hs.eg.db)
 library(visNetwork)
 library(knitr)
 library(ggpubr)
-library(NetworkDistance)
 library(Rcpp)
 library(RColorBrewer)
-library(networkD3)
-library(kableExtra)
 library(ReactomePA)
 library(clusterProfiler)
 library(ggraph)
@@ -66,7 +62,7 @@ Enrichment functions for GO and RPA enrichments
 GSE_RPA <- function(geneList, universe) {
   geneList <- mapIds(org.Hs.eg.db, geneList, "ENTREZID", "SYMBOL")
   universe <- mapIds(org.Hs.eg.db, universe, "ENTREZID", "SYMBOL")
-  pathway_enrichment <- enrichPathway(
+  pathway_enrichment <- ReactomePA::enrichPathway(
     gene = geneList,
     organism = "human",
     pvalueCutoff = 1,
@@ -97,192 +93,62 @@ GSE_MF <- function(geneList, universe, ont) {
 }
 ```
 
-```{r, eval =F}
-#' Helper function to perform a set enrichment test.
-#'
-#' The function calculates an enrichment test for a list of genes against
-#' some gene sets using a hyper-geometric test (Fisher's exaxt test).
-#'
-#' @param genelist vector of IDs (e.g. Entrez gene IDs)
-#' @param sets list with gene sets (must be the same IDs as in genelist)
-#' @param universe the universe (background list) of IDs. If missing,
-#'                 the non-redudant union of all sets is used as universe.
-#' @param restrict_universe boolean indicating whether the universe should
-#'                          be restricted to only genes also present in the
-#'                          the gene sets (TRUE) or used as provided (FALSE).
-#'                          Default to FALSE.
-#' @param alternative the test alternative for the set test, either
-#'                    "greater" (default) or "less".
-#' @param min_n_sig_set the minimal number of significant proteins/genes
-#'                      in a set in order for the set to be tested. Please
-#'                      note, that filtering is applied after the adjusted
-#'                      p-values are calculated.
-#' @param padj_method the method for p-value adjustment for the sets of
-#'                    one ontology. Default to "BH".
-#' @param verbose if TRUE print additional messages, default to FALSE
-#'
-#' @return a tibble with the test results:
-#'         - set_name: the name of the set (e.g. name of the pathway),
-#'         - n_sig number of IDs (genes/proteins) in the gene list
-#'         - n_set number of IDs (gene/proteins) in the set
-#'         - n_sig_set the number of IDs from the input list (e.g. sign. genes) in the set
-#'         - n_universe number of IDs in the universe (background list)
-#'         - p the hyper-geometrical p-value,
-#'         - padj the adjusted p-value
-#'         - sig_set a list column holding the overlap of IDs in the input list and the set
-#'
-#'         If the gene list and the given sets do not overlap or none of the
-#'         sets contain at least \code{min_n_sig_set} genes from the gene
-#'         list the function returns NULL.
-#'
-#' @importFrom magrittr "%>%"
-#' @importFrom tibble tibble
-#' @importFrom dplyr filter select mutate
-#' @importFrom stats phyper
-#' @export
-#'
-#' @note For efficiency reasons the function uses \code{phyper} instead of
-#'       \code{fisher.test}.
-#'
-#' @rdname set_enrichment
-#' @author Stephan Gade
-enrich_test <- function(genelist, sets, universe = NULL,
-                        restrict_universe = FALSE,
-                        alternative = c("greater", "less"),
-                        min_n_sig_set = 2,
-                        padj_method = "BH",
-                        verbose = F) {
-
-  alternative <- match.arg(alternative)
-
-
-  g1 <- length(genelist)
-  total <- length(universe)
-
-  res <- lapply(
-    sets,
-    function(set) {
-
-      g2 <- length(intersect(set, universe))
-      overlap <- length(intersect(genelist, set))
-
-      p <- switch(alternative,
-                  "greater" = phyper(overlap - 1, g2, total - g2, g1,
-                                     lower.tail = F),
-                  "less" = phyper(overlap, g2, total - g2, g1,
-                                  lower.tail = T))
-
-      tibble(
-        n_sig = g1, n_set = g2,
-        n_sig_set = overlap,
-        n_universe = total,
-        P.Value = p,
-        sig_set = list(intersect(genelist, set))
-      )
-    }
-  )
-
-  res <- do.call("rbind", res) %>%
-    mutate(set_name = rep(names(res), sapply(res, nrow)))
-
-  res <- res %>%
-    mutate(adj.P.Val = p.adjust(P.Value, method = padj_method)) %>%
-    dplyr::select(
-      set_name, n_sig, n_set, n_sig_set, n_universe,
-      P.Value, adj.P.Val, sig_set
-    )
-
-  if (!is.null(min_n_sig_set)) {
-    res <- res %>%
-      filter(n_sig_set >= min_n_sig_set)
-  }
-
-  attr(res, "alternative") <- alternative
-
-  res
-}
-
-```
-
-
-```{r, eval = F}
-load("data/TEDDY_geneSets.ro")
-sets <- TEDDY_geneSets$REACTOME
-
-
-test = enrich_test(genelist = c("ATM", "ATR", "CDK1", "CHEK2"),
-                   sets = sets, 
-                   universe = unique(PKN_annotated$GeneA),
-                        restrict_universe = FALSE,
-                        alternative = "greater",
-                        min_n_sig_set = 2,
-                        padj_method = "BH",
-                        verbose = F)
-```
-
-
-
 ## PKN data
 
 ```{r}
 load("data/KSN.RData")
 load("data/dorothea.RData")
 
+# to create universe for network level enrichment
 PKN_annotated <- read_tsv("data/GSK_Causal_Network_032021_Annotation.txt", show_col_types = FALSE)
 ```
 
 ## Viper results
 
 ```{r}
-load("data/210802_viper_footprints.RData")
+load("data/220510_viper_footprints.RData")
 viper_kinases <- viperRes_phospho_corrected %>%
-  filter(condition_long == "BRCA_nul_24h_4_Ola") %>%
+  filter(condition_long == "UWB1.289_24h_4uM") %>%
   arrange(desc(absNES)) %>%
   slice_head(n = 30) %>%
+  #adjust format to network nomenclature
   mutate(measured = ifelse(NES < 0, "inactive", "active"), type = "Kinase", node = regulator) %>%
   select(id = regulator, node, measured, type)
 ```
 
 ## Reactome terms
 
+Extract reactome information for processes of interest.
+
 ```{r}
+# fetch reactome data
 pathwaymembers <- toTable(reactomePATHID2EXTID) %>%
   mutate(gene_name = mapIds(org.Hs.eg.db, gene_id, "SYMBOL", "ENTREZID"))
-
 pathway_names <- toTable(reactomePATHID2NAME) %>%
   filter(grepl("Homo sapiens", path_name))
-
+# extract information to pathways of interest
 DDR <- pathway_names %>%
   filter(grepl("DNA Damage|DNA damage|DNA Repair|DNA repair|Checkpoint", path_name))
-
 DDR_members <- pathwaymembers %>%
   filter(DB_ID %in% DDR$DB_ID) %>%
   distinct(gene_name)
-
 interferon <- pathway_names %>%
   filter(grepl("Interferon|interferon", path_name))
-
 INF_members <- pathwaymembers %>%
   filter(DB_ID %in% interferon$DB_ID) %>%
   distinct(gene_name)
-
 YAP <- pathway_names %>%
   filter(grepl("YAP|TEAD", path_name))
-
 YAP_members <- pathwaymembers %>%
   filter(DB_ID %in% YAP$DB_ID) %>%
   distinct(gene_name)
-
 cell_cycle <- pathway_names %>%
   filter(grepl("Cell cycle|cell cycle|APC|mitotic", path_name))
-
 cc_members <- pathwaymembers %>%
   filter(DB_ID %in% cell_cycle$DB_ID) %>%
   distinct(gene_name)
-
 AP2 <- pathway_names %>%
   filter(grepl("TFAP", path_name))
-
 AP2_members <- pathwaymembers %>%
   filter(DB_ID %in% AP2$DB_ID) %>%
   distinct(gene_name)
@@ -293,6 +159,8 @@ AP2_members <- pathwaymembers %>%
 ```{r}
 load("data/2022_02_17_MasterThesis_networks.RData")
 ```
+
+Format networks
 
 ```{r}
 nodes <- map_dfr(result_list, "nodes", .id = "networkID") %>%
@@ -312,9 +180,6 @@ edges <- map_dfr(result_list, "combined_network", .id = "networkID") %>%
   mutate(edge_combined = paste(from, sign, to, sep = "_")) %>%
   distinct(networkID, edge_combined, .keep_all = T) %>%
   separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F)
-
-centralities <- map_dfr(network_list, 'node_degrees', .id = "networkID") %>%
-  left_join(nodes, by = c("Node"= "node", "networkID"))
 ```
 
 Extract F-statistic results and results without TPP
@@ -340,7 +205,6 @@ F_stat_nodes <- bind_rows(
   distinct(id, .keep_all = T) %>%
   mutate(group = paste(type, measured, sep = "_"))
 
-
 noTPP_edges <- filter(edges, TPP_set == "noTPP") %>%
   distinct(edge_combined, .keep_all = T)
 
@@ -351,24 +215,122 @@ noTPP_nodes <- data.frame(id = unique(c(noTPP_edges$from, noTPP_edges$to))) %>%
 
 ## Enrichment
 
-```{r}
-library(ggforce)
-nodes_processes <- centralities %>%
-  filter(TPP_set %in% c("Fstatistic", "noTPP") & model != "input node not modelled" & measured != "not available") %>%
-  mutate(group = paste(type, measured, sep = "_")) %>% 
-  group_by(TPP_set, Node, PKN) %>% 
-  mutate(n_occ = n()) %>% 
-  select(Node, TPP_set, degree, n_occ, PKN, replicate) %>% 
-  mutate(process = ifelse(Node %in% c(DDR_members$gene_name, cc_members$gene_name), "DDR and cc", "else"))
+```{r, message=F, warning=F}
+# universe built from PKN
+pathways_universe <- data.frame(protein = unique(c(PKN_annotated$GeneA, PKN_annotated$GeneB)), NES = 1)
 
-ggplot(nodes_processes, aes(x = process, y = n_occ, colour = TPP_set)) +
-  geom_violin(alpha = 0.3) +
-  geom_sina() + 
-  stat_compare_means(aes(group = TPP_set), method = "wilcox.test",
-                     label.y = 7, label = "p.signif", size =6) +
-  theme_bw(base_size = 18) +
-  facet_grid(~PKN)
+# get gathered pathway input
+pathway_input_gathered <- map_dfr(result_list, 'nodes', .id = "networkID") %>% 
+  dplyr::select(networkID, id) %>% 
+  filter(grepl("noTPP|Fstat", networkID))
+
+gene_lists <- pathway_input_gathered %>% 
+  group_by(networkID) %>% 
+  summarise(length = n())
+
+# Reactome enrichment
+pathway_enrichment <- pathway_input_gathered %>% 
+  group_by(networkID) %>% 
+  mutate(enrichment = list(as.data.frame(GSE_RPA(geneList = id, universe = pathways_universe$protein))))
+
+pathway_enrichment_unnest <- pathway_enrichment %>% 
+  distinct(networkID, enrichment) %>% 
+  unnest() %>% 
+  separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F) %>% 
+  left_join(gene_lists, by = "networkID")
 ```
+
+Calculate log odds ratio
+
+```{r, message=F, warning=F}
+pathway_enrichment_significant <- pathway_enrichment_unnest %>% 
+  filter(qvalue < 0.05) %>% 
+  # add some variables
+  mutate(pathway = Description, Zscore = -log10(qvalue),
+         pathway_size = as.numeric(gsub("/.+$", "", BgRatio)),
+         Gene_Ratio = Count/pathway_size,
+         LR = log2((Count/length)/(pathway_size/length(pathways_universe$protein))))
+```
+
+
+Disentangle the results
+
+```{r}
+pathways_perstrategy <- pathway_enrichment_significant %>% 
+  ungroup() %>% 
+  group_by(PKN, TPP_set, pathway) %>% 
+  mutate(n_replicates = n()) %>% 
+  # filter pathways to be found i  at least two of three network replicates
+  filter(n_replicates > 1) %>% 
+  # collapse replicate infromation
+  distinct(PKN, TPP_set, pathway, .keep_all = T) %>% 
+  select(TPP_set, PKN, c(15:19), qvalue, Count, geneID)
+
+pathways_TPPunique <- pathways_perstrategy %>% 
+  # use only
+   anti_join(filter(pathway_enrichment_significant, TPP_set == "noTPP" ), by = c("PKN","pathway"))
+```
+
+### Paper
+
+```{r, fig.width=7, fig.height=4}
+
+group_cc <- "cell cycle|Cell Cycle|NIMA|APC|G2/|G1/|Mitotic|mitotic|Prometaphase|G2 Phase|G1 Phase|Prophase|cyclin|Cyclin"
+group_DNA <- "Checkpoint|Repair|Damage|repair|damage| Strand Breaks|DNA double-strand break|Homologous Recombination|Chk1/Chk2|DNA Double Strand Break"
+
+pathway_grouping <- function(ER_result, group, exclude=F){
+  grouped_pathways <- ER_result %>%
+  ungroup() %>%
+  distinct(PKN, pathway, .keep_all = T) %>%
+  select(PKN, pathway, qvalue, geneID, Count, Gene_Ratio, pathway_size, LR)
+  if(exclude ==F){
+    grouped_pathways <- grouped_pathways %>% filter(grepl(group, pathway))
+  } else {
+    grouped_pathways <- grouped_pathways %>% filter(!grepl(group, pathway))
+  }
+  
+}
+
+TPP_cc_pathways <- pathway_grouping(pathways_TPPunique, group_cc)
+TPP_DDR_pathways <- pathway_grouping(pathways_TPPunique, group_DNA)
+TPP_other_pathways <- pathway_grouping(pathways_TPPunique, paste(group_cc, group_DNA, sep ="|"), exclude =T)
+
+
+comparison_TPP <- bind_rows(
+  "Cell \n Cycle" = TPP_cc_pathways,
+  "DNA damage \n and repair" = TPP_DDR_pathways,
+  "other" = TPP_other_pathways,
+  .id = "pathway_family")
+
+noTPP_cc_pathways <- pathway_grouping(nonTPP, group_cc)
+noTPP_DDR_pathways <- pathway_grouping(nonTPP, group_DNA)
+noTPP_other_pathways <- pathway_grouping(nonTPP, paste(group_cc, group_DNA, sep ="|"), exclude =T)
+
+comparison_noTPP <- bind_rows(
+  "Cell \n Cycle" = noTPP_cc_pathways,
+  "DNA damage \n and repair" = noTPP_DDR_pathways,
+  "other" = noTPP_other_pathways,
+  .id = "pathway_family") 
+
+comparison = bind_rows("TPP" = comparison_TPP,
+                       "noTPP" = comparison_noTPP,
+                       .id = "network") %>% 
+  # filter for minimum two nodes matched to a pathway with minimum 6 annotated members
+  filter(Count > 1 & pathway_size > 5) %>% 
+  ungroup()
+
+p <- ggplot(comparison, aes(x = pathway_family, y = LR, colour = network)) +
+  geom_boxplot(lwd =1) +
+  stat_compare_means(aes(group = network), label.y = 7, label = "p.signif") +
+  scale_colour_manual(values = c("TPP" = "mediumseagreen", "noTPP" = "grey50")) +
+  cowplot::theme_cowplot(font_size = 16) +
+  labs(x = "", y = "Log odds-ratio \n pathway enrichment") +
+  theme(legend.position = "bottom")
+
+p
+
+```
+
 
 
 ## Network plots
@@ -457,7 +419,8 @@ pal <- c(
 )
 
 target <- clusters_Fstat$node
-F_stat_nodes <- F_stat_nodes[match(target, F_stat_nodes$id), ]
+F_stat_nodes <- F_stat_nodes[match(target, F_stat_nodes$id), ] %>% 
+  mutate(shape = factor(F_stat_nodes$cluster))
 
 set.seed(4)
 p <- ggraph(graph_Fstat, layout = "fr") +
@@ -467,8 +430,8 @@ p <- ggraph(graph_Fstat, layout = "fr") +
     start_cap = circle(3, "mm")
   ) +
   geom_node_point(aes(colour = F_stat_nodes$cluster), size = 6) +
-  #geom_node_text(aes(label = F_stat_nodes$id), size = 2.5) +
   scale_colour_manual(values = pal) +
+ # scale_shape_manual(values = c(15:20, 25)) +
   theme_graph() +
   theme(legend.position = "right")
 p
@@ -575,56 +538,6 @@ p
 ## Processes in detail 
 
 Analyze the processes identified by the cluster level analysis in detail.
-
-```{r}
-for (i in list(
-  AP2_members$gene_name,
-  cc_members$gene_name,
-  YAP_members$gene_name,
-  INF_members$gene_name,
-  DDR_members$gene_name
-)) {
-  interesting_nodes <- F_stat_nodes %>%
-    filter(id %in% i)
-
-  interesting_edges <- F_stat_edges %>%
-    filter(from %in% interesting_nodes$id | to %in% interesting_nodes$id)
-
-  occurences <- table(c(interesting_edges$from, interesting_edges$to))
-
-  interesting_nodes <- F_stat_nodes %>%
-    filter(id %in% unique(c(interesting_edges$from, interesting_edges$to))) %>%
-    mutate(
-      group = ifelse(id %in% i | type == "TPP", group, "background"),
-      size = ifelse(id %in% i, 35, 10),
-      # bigger nodes for pathway nodes
-      shape = ifelse(id %in% i, "circle", "dot")
-    ) %>%
-    rowwise() %>%
-    # make network extract smaller and better readable by reomving nodes with only one edge
-    filter(id %in% i | occurences[[id]] > 1)
-
-  set.seed(1)
-  p <- visNetwork(interesting_nodes, interesting_edges) %>%
-    visGroups(groupname = "TPP_active", color = "mediumseagreen") %>%
-    visGroups(groupname = "TPP_inactive", color = "palegreen") %>%
-    visGroups(groupname = "TF_active", color = "#8b0a50") %>%
-    visGroups(groupname = "TF_inactive", color = "palevioletred") %>%
-    visGroups(groupname = "Kinase_active", color = "darkcyan") %>%
-    visGroups(groupname = "Kinase_inactive", color = "mediumturquoise") %>%
-    visGroups(groupname = "other_active", color = "burlywood") %>%
-    visGroups(groupname = "other_inactive", color = "wheat") %>%
-    visGroups(groupname = "background", color = "gainsboro") %>%
-    # standard options
-    visEdges(arrows = "to", color = "dimgrey", width = 4) %>%
-    visNodes(font = "30px arial black bold") %>%
-    visLegend() %>%
-    visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-    visNetwork::visIgraphLayout(layout = "layout_with_fr")
-  print(p)
-}
-```
-
 
 ```{r}
 for (i in list(
@@ -930,9 +843,6 @@ p_JI <- Jaccard_index %>%
   ) %>%
   ggplot(aes(x = (cluster_withTPP), y = (cluster_noTPP), colour = colouring, size = JI)) +
   geom_point() +
-  geom_text(aes(label = rounded), 
-            size = 4, colour = "black", fontface = "bold")+
-  #scale_size_continuous(range = c(3, 9)) +
   scale_size_continuous(name = "JI",
                           breaks = bb,
                           limits = c(0, 1),
@@ -944,87 +854,9 @@ p_JI <- Jaccard_index %>%
 p_JI
 ```
 
-```{r}
-p_JI <- Jaccard_index %>%
-  filter(cond1 != cond2) %>%
-  filter(!(grepl("with", cond1) & grepl("with", cond2))) %>%
-  filter(!(grepl("no", cond1) & grepl("no", cond2))) %>%
-  dplyr::mutate(normalized = purrr::map2_chr(cond1, cond2, ~ paste(sort(c(.x, .y)), collapse = ""))) %>%
-  distinct(normalized, .keep_all = T) %>%
-  dplyr::select(-normalized) %>%
-  mutate(
-    cluster_noTPP = gsub("no TPP_", "", cond2), cluster_withTPP = gsub("with TPP_", "", cond1),
-    colouring = ifelse(JI == 0, "no overlap", cluster_withTPP),
-    rounded = ifelse(JI != 0, round(JI,2), NA)
-  ) %>%
-  ggplot(aes(x = (cluster_withTPP), y = (cluster_noTPP), fill = colouring)) +
-  geom_raster(aes(alpha = JI)) +
-  geom_text(aes(label = rounded), 
-            size = 4, colour = "black", fontface = "bold")+
-  scale_fill_manual(values = pal, guide = "none") +
-  theme_bw(base_size = 16) +
-  theme(panel.grid = element_blank(), legend.position = "none") +
-  labs(x = "clusters networks with TPP", y = "clusters networks without TPP")
-p_JI
-```
 
+# Save
+```{r, eval =FALSE}
 
-
-### corrplot
-
-```{r}
-library(corrplot)
-
-myPalette <- colorRampPalette(c("wheat", "darksalmon",  "indianred"))
-
-JI_matrix <- Jaccard_index %>%
-  mutate(JI = ifelse(JI == 0, NA, JI))%>% 
-  acast(cond1~cond2, value.var = "JI")
-
-colnames(JI_matrix) <- gsub("^.*_", "",colnames(JI_matrix))
-
-rownames(JI_matrix) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9",
-                         " 1", " 2", " 3", " 4", " 5", " 6", " 7")
-corrplot::corrplot(JI_matrix,
-                   method = "shade",
-                   type = "upper",
-                   is.corr = F,
-                   # col = "black",
-                   col.lim = c(0,1),
-                   col  = myPalette(100),
-                   na.label= " ",
-                   addCoef.col = "black",
-                   tl.cex = 1.4,
-                   tl.srt = 0,
-                   tl.offset = 0.6,
-                   number.cex=0.7, 
-                   tl.col = c(rep("grey40", 9), rep("mediumseagreen", 7)))
-```
-
-```{r}
-myPalette <- colorRampPalette(c("wheat", "darksalmon",  "indianred"))
-
-JI_matrix <- Jaccard_index %>%
-  mutate(JI = ifelse(JI == 0, NA, JI))%>% 
-  acast(cond1~cond2, value.var = "JI")
-
-colnames(JI_matrix) <- gsub("^.*_", "",colnames(JI_matrix))
-
-rownames(JI_matrix) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9",
-                         " 1", " 2", " 3", " 4", " 5", " 6", " 7")
-corrplot::corrplot(JI_matrix,
-                   method = "circle",
-                   type = "upper",
-                   is.corr = F,
-                   # col = "black",
-                   col.lim = c(0,1),
-                   col  = myPalette(100),
-                   na.label= " ",
-                   addCoef.col = "black",
-                   tl.cex = 1.2,
-                   tl.srt = 0,
-                   tl.offset = 0.6,
-                   number.cex=0.7, 
-                   tl.col = c(rep("grey40", 9), rep("mediumseagreen", 7)))
 ```
 
