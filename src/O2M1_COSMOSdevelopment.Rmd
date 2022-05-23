@@ -1,5 +1,5 @@
 ---
-title: "O2M1: COSMOS package development -  script to run adjusted workflow"
+title: "Script to run adjusted COSMOS workflow with TPP data"
 output:
   html_document:
     keep_md: yes
@@ -24,16 +24,16 @@ knitr::opts_chunk$set(
   fig.width = 8 * (1 + sqrt(5)) / 2, fig.height = 8 # golden ratio
 )
 
-knitr::opts_knit$set(root.dir = "C:/Users/mb923573/Documents/Master_thesis/O2_Network_modeling/")
+knitr::opts_knit$set(root.dir = "C:/Users/burtsche/Documents/COSMOS-TPP_paper")
 ```
 
 ## Load packages
 
 ```{r, message=F, warning =F}
+library(plyr)
 library(tidyverse) # ggplot2, purrr, tibble, dplyr, tidyr, stringr, readr, forcats
 library("reshape2")
 library(OmnipathR)
-library(xlsx)
 library(viridis)
 library(ggrepel)
 # options(connectionObserver = NULL)
@@ -45,8 +45,11 @@ library(cosmosR)
 library(CARNIVAL)
 library(igraph)
 library(biomaRt)
-library(plyr)
-# devtools::install_github("saezlab/CARNIVAL@v1.3")
+
+mutate <- dplyr::mutate
+select <- dplyr::select
+group_by <- dplyr::group_by
+#devtools::install_github("saezlab/CARNIVAL@v1.3")
 ```
 
 ## Run settings
@@ -65,6 +68,8 @@ load("data/210626_DEmultiomics_Olaparib_gathered_updated")
 load("data/2021_09_10_TPPscores_Fstatmono_T47D_without30uM.RData")
 load("data/310521_PKNcollection.RData")
 load("data/2021_09_13_09_13_53_COSMOSinput_T47D_TPPFstat_no30uM_viper.RData")
+
+220512_cosmosinput_merged.RData
 ```
 
 ## Define TPP input
