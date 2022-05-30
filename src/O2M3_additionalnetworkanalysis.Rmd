@@ -22,7 +22,8 @@ knitr::opts_chunk$set(
   cache = TRUE,
   cache.lazy = FALSE,
   eval = TRUE,
-  fig.width = 7 * (1 + sqrt(5)) / 2, fig.height = 7
+  fig.width = 7 * (1 + sqrt(5)) / 2, fig.height = 7,
+  dpi = 700
 )
 knitr::opts_knit$set(root.dir = "C:/Users/burtsche/Documents/COSMOS-TPP_paper")
 ```
@@ -269,11 +270,14 @@ pathways_perstrategy <- pathway_enrichment_significant %>%
 pathways_TPPunique <- pathways_perstrategy %>% 
   # use only
    anti_join(filter(pathway_enrichment_significant, TPP_set == "noTPP" ), by = c("PKN","pathway"))
+
+pathways_noTPP <- pathways_perstrategy %>% 
+ filter(TPP_set == "noTPP" )
 ```
 
 ### Paper
 
-```{r, fig.width=7, fig.height=4}
+```{r, fig.width=4, fig.height=4}
 
 group_cc <- "cell cycle|Cell Cycle|NIMA|APC|G2/|G1/|Mitotic|mitotic|Prometaphase|G2 Phase|G1 Phase|Prophase|cyclin|Cyclin"
 group_DNA <- "Checkpoint|Repair|Damage|repair|damage| Strand Breaks|DNA double-strand break|Homologous Recombination|Chk1/Chk2|DNA Double Strand Break"
@@ -302,9 +306,9 @@ comparison_TPP <- bind_rows(
   "other" = TPP_other_pathways,
   .id = "pathway_family")
 
-noTPP_cc_pathways <- pathway_grouping(nonTPP, group_cc)
-noTPP_DDR_pathways <- pathway_grouping(nonTPP, group_DNA)
-noTPP_other_pathways <- pathway_grouping(nonTPP, paste(group_cc, group_DNA, sep ="|"), exclude =T)
+noTPP_cc_pathways <- pathway_grouping(pathways_noTPP, group_cc)
+noTPP_DDR_pathways <- pathway_grouping(pathways_noTPP, group_DNA)
+noTPP_other_pathways <- pathway_grouping(pathways_noTPP, paste(group_cc, group_DNA, sep ="|"), exclude =T)
 
 comparison_noTPP <- bind_rows(
   "Cell \n Cycle" = noTPP_cc_pathways,
@@ -397,7 +401,7 @@ F_stat_nodes <- F_stat_nodes %>%
   mutate(cluster = as.factor(cluster))
 ```
 
-```{r , fig.width=10, fig.height=7}
+```{r , fig.width=13, fig.height=7}
 pal <- c(
   "1" = "#b68c47",
   "2" = "#934ac0",
@@ -436,6 +440,8 @@ p <- ggraph(graph_Fstat, layout = "fr") +
   theme(legend.position = "right")
 p
 ```
+
+
 
 ## Cluster level enrichment
 
@@ -823,7 +829,16 @@ Jaccard_index <- sapply(LoL, function(x) {
 
 
 ```{r}
-pal <- c("1" = "#b68c47", "2" = "#934ac0", "3" = "#71b448", "4" = "#af5179", "5" = "#558965", "6" = "#bb4b37", "7" = "#6d7ab3", "no overlap" = "white")
+pal <- c(
+  "1" = "#EE7733",
+  "2" = "#0077BB",
+  "3" = "#33BBEE",
+  "4" = "#EE3377",
+  "5" = "#CC3311",
+  "6" = "#009988",
+  "7" = "#BBBBBB",
+  "no overlap" = "white"
+)
 
 bb <- c(0,0.25, 0.5, 0.75, 1) # define breaks.
 #ll <- c("40%","30%","20%","10%","5%") # labels.
@@ -848,7 +863,7 @@ p_JI <- Jaccard_index %>%
                           limits = c(0, 1),
                           range = c(1, 10) ) +
   scale_colour_manual(values = pal, guide = "none") +
-  theme_bw(base_size = 16) +
+  cowplot::theme_cowplot(font_size = 16) +
   theme(panel.grid = element_blank(), legend.position = "bottom") +
   labs(x = "clusters networks with TPP", y = "clusters networks without TPP")
 p_JI
