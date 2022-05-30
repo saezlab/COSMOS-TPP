@@ -247,6 +247,14 @@ ggplot(TPPFstatistic_hits_adap, aes(x= mode, fill=mode)) +
 ```
 
 
+## Save
+
+```{r, eval =  FALSE}
+TPP_all_scores <- TPPFstatistic_hits_adap
+save(TPP_all_scores, file = "results/220530_TPPallscores.RData")
+```
+
+
 # TPP hit evaluation Evaluation
 
 ## Pathways
