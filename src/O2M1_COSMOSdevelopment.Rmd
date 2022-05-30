@@ -58,25 +58,25 @@ Set a run ID which will be used to save the results.
 
 ```{r}
 source("src/revision_COSMOS_functions.R")
-runID <- paste(gsub(" |-|:", "_", Sys.time()), "TPPactestNA_newNAweight_Fstat_without30uM_adjrev_viper_COSMOS_T47D", sep = "_")
+runID <- paste(gsub(" |-|:", "_", Sys.time()), "testforpaper_onThinkPAd_V1", sep = "_")
 ```
 
 ## Load data
 
 ```{r}
 load("data/210626_DEmultiomics_Olaparib_gathered_updated")
-load("data/2021_09_10_TPPscores_Fstatmono_T47D_without30uM.RData")
+#load("data/2021_09_10_TPPscores_Fstatmono_T47D_without30uM.RData")
 load("data/310521_PKNcollection.RData")
-load("data/2021_09_13_09_13_53_COSMOSinput_T47D_TPPFstat_no30uM_viper.RData")
+load("results/220512_cosmosinput_merged.RData")
+load("results/220530_TPPallscores.RData")
 
-220512_cosmosinput_merged.RData
 ```
 
 ## Define TPP input
 
 ```{r}
-TPP_cosmos_input_final <- TPP_cosmos_input_final_Fstat # input object in correct format for TPP input
-TPP_all_scores <- TPP_Fstatmono_without30uM_T47D # all scores to extarct stabilized and destabilized weights
+TPP_cosmos_input_final <- TPP_cosmos_input_final# input object in correct format for TPP input
+TPP_all_scores <- TPP_all_scores # all scores to extarct stabilized and destabilized weights
 
 # top_mono <- TPP_all_scores %>%
 #   filter(hit_call == "TPPmonotony") %>%
@@ -94,51 +94,6 @@ TPP_all_scores <- TPP_all_scores %>%
 
 ##Footprinting regulators
 
-Code for old footprinting results.
-
-```{r}
-# cell_line <- "UWB_1.289" #UWB1.289_BRCA1 #T47D
-# timepoint <- "24h"
-# concentration <- "4uM"
-# compound <- "Olaparib"
-#
-# condition_long <- "UWB1.289_24h_4uM"
-```
-
-```{r}
-# #transcriptomics
-# transcriptomic_regulators <- empiricalzscore_act_transcriptomics %>%
-#   filter(sample == condition_long & zscore != 0)
-#
-# if (nrow(transcriptomic_regulators) < 20) {
-#   transcriptomic_regulators <- empiricalzscore_act_transcriptomics %>%
-#   filter(sample == condition_long) %>%
-#   group_by(sample) %>%
-#   top_n(wt = abs(score), n = 20)
-# }
-#
-# TF_input_COSMOS <- sign(transcriptomic_regulators$score)
-# names(TF_input_COSMOS) <- paste0("X",
-#   mapIds(org.Hs.eg.db, transcriptomic_regulators$protein, 'ENTREZID', 'SYMBOL'))
-# TF_input_COSMOS <- TF_input_COSMOS[names(TF_input_COSMOS)!="XNA"]
-# names(TF_input_COSMOS) <- as.character(names(TF_input_COSMOS))
-#
-# #phosphoproteomics
-# phosphoproteomic_regulators <- empiricalzscore_act_phosphoproteomics %>%
-#   filter(sample == condition_long & abs(zscore) > 0.5)
-#
-# if (nrow(phosphoproteomic_regulators) < 20) {
-#   phosphoproteomic_regulators <- empiricalzscore_act_phosphoproteomics %>%
-#   filter(sample == condition_long) %>%
-#   group_by(sample) %>%
-#   top_n(wt = abs(score), n = 20)
-# }
-#
-# Kinases_input_COSMOS <- sign(phosphoproteomic_regulators$score)
-# names(Kinases_input_COSMOS) <- paste0("X",
-#   mapIds(org.Hs.eg.db, phosphoproteomic_regulators$protein, 'ENTREZID', 'SYMBOL'))
-# Kinases_input_COSMOS <- Kinases_input_COSMOS[names(Kinases_input_COSMOS)!="XNA"]
-```
 
 Code for new footprinting results. They are already filtered in the COSMOSinput object after kinase sign filtering script.
 
@@ -166,31 +121,8 @@ names(TPP_all_scores_v) <- paste0(
   mapIds(org.Hs.eg.db, TPP_all_scores$gene_name, "ENTREZID", "SYMBOL")
 )
 TPP_all_scores_v <- TPP_all_scores_v[names(TPP_all_scores_v) != "XNA"]
-```
 
-### Option 1: High coverage hits, opt as NA
-
-```{r}
-# TPP_hits_highcoverage <- TPP_all_scores %>%
-#   dplyr::group_by(representative) %>%
-#   dplyr::mutate(number_strategies = n()) %>%
-#   dplyr::filter(number_strategies >= 3) %>%
-#   dplyr::distinct(representative, .keep_all = T) %>%
-#   dplyr::mutate(signed_score = ifelse(mode == "destabilized" | mode =="decreased abundance", -1, 1))
-#
-# TPP_input_COSMOS <- TPP_hits_highcoverage$signed_score
-# names(TPP_input_COSMOS) <- paste0("X",
-#   mapIds(org.Hs.eg.db,  TPP_hits_highcoverage$gene_name, 'ENTREZID', 'SYMBOL'))
-# TPP_input_COSMOS <- TPP_input_COSMOS[names(TPP_input_COSMOS)!="XNA"]
-#
-# TPP_input_COSMOS_tmp <- rep(NaN, length(TPP_input_COSMOS))
-# names(TPP_input_COSMOS_tmp) <- names(TPP_input_COSMOS)
-```
-
-### Option 2: Derived activities in final input objects
-
-```{r}
-TPP_input_COSMOS_tmp <- as.numeric(TPP_cosmos_input_final$sign_summ)
+TPP_input_COSMOS_tmp <- as.numeric(TPP_cosmos_input_final$substrate_activity_predicted_summ)
 names(TPP_input_COSMOS_tmp) <- paste0(
   "X",
   mapIds(org.Hs.eg.db, TPP_cosmos_input_final$TPP_protein, "ENTREZID", "SYMBOL")
@@ -207,7 +139,6 @@ TPP_input_COSMOS_weights <- TPP_all_scores_v[names(TPP_input_COSMOS_weights_tmp)
 
 rm(TPP_input_COSMOS_weights_tmp)
 
-# TPP_input_COSMOS_tmp <- TPP_input_COSMOS_tmp[!is.na(TPP_input_COSMOS_tmp)]
 ```
 
 
@@ -265,21 +196,6 @@ trans_vs_prot <- transcriptomics_signed %>%
     rank_trans = dense_rank(logFC.x),
     rank_prot = dense_rank(logFC.y)
   )
-
-p_trans_vs_prot <- ggplot(trans_vs_prot, aes(
-  x = rank_trans,
-  y = rank_prot
-)) +
-  geom_point()
-p_trans_vs_prot
-
-p_trans_vs_prot <- ggplot(trans_vs_prot, aes(
-  x = logFC.x,
-  y = logFC.y
-)) +
-  geom_point()
-p_trans_vs_prot
-
 trans_vs_prot_direction <- trans_vs_prot %>%
   mutate(agreement = ifelse(direction.x == direction.y, "same direction", "other direction"))
 
@@ -295,54 +211,6 @@ transcriptomics_proteomics_filtered <- transcriptomics_filtered %>%
   left_join(dplyr::select(trans_vs_prot_direction, GeneSymbol, agreement), by = "GeneSymbol") %>%
   mutate(agreement = ifelse(is.na(agreement), "no overlap", agreement)) %>%
   mutate(FC = ifelse(agreement == "other direction", 0, FC))
-```
-
-Old: check direction overlap of phospho data with transcriptomics and proteomics
-
-```{r}
-# transcriptomic_regulators_proteomics <- inner_join(proteomics_filtered, transcriptomic_regulators, by = c("GeneSymbol" = "protein"))
-```
-
-
-```{r}
-# phospho_filtered <- phospho_ola %>%
-#   mutate(aa=str_extract(psite, "[[:upper:]]"),
-#                         pos=as.numeric(str_extract(psite, "\\d{1,4}"))) %>%
-#                       mutate(ID_cosmos=paste(GeneSymbol, "_", aa, pos, sep=""))%>%
-#   filter(condition_long == "UWB1.289_24h_4uM" &
-#            !is.na(EntrezID)) %>%
-#   distinct(EntrezID, .keep_all = T)
-#
-# load("data/KSN.RData")
-#
-# relevant_psites_expressed <- filter(KSN, enzyme_genesymbol %in% phosphoproteomic_regulators$protein) %>%
-#   inner_join(phospho_filtered, by = c("substrate_genesymbol" = "ID_cosmos"))
-#
-# proteomics_phosphoproteomics <- inner_join(relevant_psites_expressed, proteomics_filtered, by = "GeneSymbol")
-#
-# p_proteomics_phosphoproteomics <- ggplot(proteomics_phosphoproteomics, aes(x = dense_rank(logFC.x),
-#                                              y = dense_rank(logFC.y))) +
-#   geom_point()
-# p_proteomics_phosphoproteomics
-#
-# psites_vs_all <- trans_vs_prot_direction %>%
-#   filter(GeneSymbol %in% relevant_psites_expressed$GeneSymbol)
-#
-# p_psites_vs_all <- ggplot(psites_vs_all, aes(x = agreement)) +
-#   geom_bar()
-# p_psites_vs_all
-```
-
-
-```{r}
-# relevant_psites_entrez <- relevant_psites_expressed %>%
-#   mutate(CosmosID = paste0("X", EntrezID))
-#
-# psite_coverage <- relevant_psites_entrez %>%
-#   mutate(inPKN = ifelse(CosmosID %in% meta_network_final_fw1$source| CosmosID %in% meta_network_final_fw1$target, "T", "F"))
-#
-# psite_coverage2 <- relevant_psites_entrez %>%
-#   mutate(inPKN = ifelse(CosmosID %in% meta_network$source| CosmosID %in% meta_network$target, "T", "F"))
 ```
 
 
@@ -371,6 +239,7 @@ Filter inconsistent edges btw TPP and Kinases (From Kinase sign filtering)
 
 ```{r}
 KSN_TPPtargets_filt <- KSN_TPPtargets_filt %>%
+  separate(substrate_genesymbol, into = c("substrate_protein","substrate_site"), remove = F) %>% 
   mutate(
     source = as.character(paste0("X", mapIds(org.Hs.eg.db, enzyme_genesymbol, "ENTREZID", "SYMBOL"))),
     target = as.character(paste0("X", mapIds(org.Hs.eg.db, substrate_protein, "ENTREZID", "SYMBOL")))
@@ -520,10 +389,10 @@ input_fw1 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_fw1)
 # define options for CARNIVAL optimization
 timelimit <- 800
 mipGAP <- 0.15
-solverPath <- "~/Documents/gsk/COSMOS/CPLEX_Studio1210/cplex/bin/x86-64_osx/cplex"
+solverPath <- "C:/Program Files/IBM/ILOG/CPLEX_Studio1210/cplex/bin/x64_win64/cplex.exe"
 used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
 
-beepr::beep(1)
+#beepr::beep(1)
 CARNIVAL_Result_fw1 <- runCARNIVAL(
   solverPath = solverPath,
   netObj = meta_network_final_fw1,
@@ -550,7 +419,7 @@ used_options = used_options,
 class = "cosmos_data"
 )
 
-beepr::beep(3)
+#beepr::beep(3)
 ```
 
 # Fw2
@@ -583,9 +452,9 @@ input_fw2 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_fw2)
 
 ```{r, eval = FALSE}
 # define options for CARNIVAL optimization
-timelimit <- 2000
+timelimit <- 500
 mipGAP <- 0.15
-solverPath <- "~/Documents/gsk/COSMOS/CPLEX_Studio1210/cplex/bin/x86-64_osx/cplex"
+#solverPath <- "~/Documents/gsk/COSMOS/CPLEX_Studio1210/cplex/bin/x86-64_osx/cplex"
 used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
 
 beepr::beep(1)
@@ -731,9 +600,10 @@ input_rev1 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_rev
 ```{r, eval = FALSE}
 
 # define options for CARNIVAL optimization
-timelimit <- 3000
+timelimit <- 500
 mipGAP <- 0.15
-solverPath <- "~/Documents/gsk/COSMOS/CPLEX_Studio1210/cplex/bin/x86-64_osx/cplex"
+
+# solverPath <- "~/Documents/gsk/COSMOS/CPLEX_Studio1210/cplex/bin/x86-64_osx/cplex"
 used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
 
 beepr::beep(1)
@@ -796,9 +666,9 @@ input_rev2 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_rev
 ```{r, eval = FALSE}
 
 # define options for CARNIVAL optimization
-timelimit <- 7000
+timelimit <- 500
 mipGAP <- 0.15
-solverPath <- "~/Documents/gsk/COSMOS/CPLEX_Studio1210/cplex/bin/x86-64_osx/cplex"
+#solverPath <- "~/Documents/gsk/COSMOS/CPLEX_Studio1210/cplex/bin/x86-64_osx/cplex"
 used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
 
 beepr::beep(1)
@@ -834,7 +704,7 @@ beepr::beep(3)
 
 ```{r, eval = FALSE}
 save(COSMOS_object_fw1, COSMOS_object_fw2, COSMOS_object_rev1, COSMOS_object_rev2,
-  file = paste0("/Users/miraburtscher/Documents/gsk/O2_Network_modeling/results/", runID, ".RData")
+  file = paste0("C:/Users/burtsche/Documents/COSMOS-TPP_paper/results/", runID, ".RData")
 )
 ```
 
