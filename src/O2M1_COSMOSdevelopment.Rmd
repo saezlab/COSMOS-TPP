@@ -74,7 +74,7 @@ solverPath <- "C:/Program Files/IBM/ILOG/CPLEX_Studio1210/cplex/bin/x64_win64/cp
 load("data/220531_limma_multiomics_forpaper.RData")
 
 # prior knowledge network
-load("data/310521_PKNcollection.RData")
+load("data/220531_COSMOSPKN.RData")
 
 # input data after activity estimation
 # contains filtered KSN interactions, TPP hits, TF and kinase information
@@ -86,7 +86,6 @@ load("results/220530_TPPallscores.RData")
 load("data/dorothea.RData")
 
 ```
-
 
 ## Define TPP input
 
