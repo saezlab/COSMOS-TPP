@@ -1,0 +1,655 @@
+---
+title: "Script to run adjusted COSMOS workflow with TPP data"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    theme: united
+    code_folding: hide
+---
+
+
+This script shows how the COSMOS network with and without TPP input were generated. The input data and prior knowledge has been changed for the different results. 
+
+# General settings
+
+Set some knitr parameter and the working directory.
+
+```{r setup}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  include = TRUE,
+  cache = TRUE,
+  cache.lazy = FALSE,
+  eval = TRUE,
+  fig.width = 8 * (1 + sqrt(5)) / 2, fig.height = 8 # golden ratio
+)
+
+knitr::opts_knit$set(root.dir = "C:/Users/burtsche/Documents/COSMOS-TPP_paper")
+```
+
+## Load packages
+
+```{r, message=F, warning =F}
+library(plyr)
+library(tidyverse) # ggplot2, purrr, tibble, dplyr, tidyr, stringr, readr, forcats
+library("reshape2")
+library(OmnipathR)
+library(viridis)
+library(ggrepel)
+# options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(visNetwork)
+library(knitr)
+library(ggpubr)
+library(cosmosR)
+library(CARNIVAL)
+library(igraph)
+library(biomaRt)
+
+mutate <- dplyr::mutate
+select <- dplyr::select
+group_by <- dplyr::group_by
+#devtools::install_github("saezlab/CARNIVAL@v1.3")
+
+source("src/revision_COSMOS_functions.R")
+```
+
+## Run settings
+
+Set a run ID which will be used to save the results.
+
+```{r}
+runID <- paste(gsub(" |-|:", "_", Sys.time()), "testforpaper_onThinkPAd_V1", sep = "_")
+
+solverPath <- "C:/Program Files/IBM/ILOG/CPLEX_Studio1210/cplex/bin/x64_win64/cplex.exe"
+```
+
+## Load data
+
+```{r}
+# limma results for filtering steps
+load("data/220531_limma_multiomics_forpaper.RData")
+
+# prior knowledge network
+load("data/220531_COSMOSPKN.RData")
+
+# input data after activity estimation
+# contains filtered KSN interactions, TPP hits, TF and kinase information
+load("results/220512_cosmosinput_merged.RData")
+
+# full TPP result df to infer weights from stabilization information
+load("results/220530_TPPallscores.RData")
+
+load("data/dorothea.RData")
+
+```
+
+## Define TPP input
+
+```{r}
+TPP_cosmos_input_final <- TPP_cosmos_input_final# input object in correct format for TPP input
+TPP_all_scores <- TPP_all_scores # all scores to extarct stabilized and destabilized weights
+
+TPP_all_scores <- TPP_all_scores %>%
+  mutate(signed_score = ifelse(mode == "destabilized" | mode == "decreased abundance", -1, 1)) %>%
+  mutate(weight = score) %>%
+  filter(hit_call == "TPPFstatistic")
+```
+
+#Prepare input data
+
+##Footprinting regulators
+
+Format footprinting results for COSMOS (correct identifiers in vector format).
+
+```{r}
+TF_input_COSMOS <- sign(viper_trans_top$NES)
+names(TF_input_COSMOS) <- paste0(
+  "X",
+  mapIds(org.Hs.eg.db, viper_trans_top$regulator, "ENTREZID", "SYMBOL")
+)
+
+
+Kinases_input_COSMOS <- sign(viper_phospho_top$NES)
+names(Kinases_input_COSMOS) <- paste0(
+  "X",
+  mapIds(org.Hs.eg.db, viper_phospho_top$regulator, "ENTREZID", "SYMBOL")
+)
+```
+
+##TPP hits
+
+Format TPP results for COSMOS (correct identifiers in vector format).
+
+```{r}
+# extract TPP activity info
+TPP_input_COSMOS <- as.numeric(TPP_cosmos_input_final$substrate_activity_predicted_summ)
+names(TPP_input_COSMOS) <- paste0(
+  "X",
+  mapIds(org.Hs.eg.db, TPP_cosmos_input_final$TPP_protein, "ENTREZID", "SYMBOL")
+)
+TPP_input_COSMOS <- TPP_input_COSMOS[names(TPP_input_COSMOS) != "XNA"]
+
+# extract TPP weight info
+TPP_weights_v <- TPP_all_scores$weight
+names(TPP_weights_v) <- paste0(
+  "X",
+  mapIds(org.Hs.eg.db, TPP_all_scores$gene_name, "ENTREZID", "SYMBOL")
+)
+TPP_weights_v <- TPP_weights_v[names(TPP_weights_v) != "XNA"]
+
+# use weights for TPP hits without activity estimate
+TPP_input_COSMOS_weights_tmp <- TPP_input_COSMOS[is.na(TPP_input_COSMOS)]
+names(TPP_input_COSMOS_weights_tmp) <- names(TPP_input_COSMOS_weights_tmp)
+TPP_input_COSMOS_weights <- TPP_weights_v[names(TPP_input_COSMOS_weights_tmp)]
+
+rm(TPP_input_COSMOS_weights_tmp,TPP_weights_v)
+
+```
+
+
+##RNA-Seq data
+
+Extract transcriptomic background for optimization.
+
+```{r}
+transcriptomics_filtered <- transcriptomics_ola %>%
+  filter(!is.na(EntrezID)) %>%
+  distinct(EntrezID, .keep_all = T)
+
+RNA_input_COSMOS <- transcriptomics_filtered$logFC
+names(RNA_input_COSMOS) <- as.character(paste0("X", transcriptomics_filtered$EntrezID))
+RNA_input_COSMOS <- RNA_input_COSMOS[names(RNA_input_COSMOS) != "XNA"]
+names(RNA_input_COSMOS) <- as.character(names(RNA_input_COSMOS))
+
+transcriptomics_signed <- transcriptomics_filtered %>%
+  dplyr::select(EntrezID, GeneSymbol, logFC) %>%
+  mutate(direction = sign(logFC))
+transcriptomics_filtered$ID <- paste0("X", transcriptomics_filtered$EntrezID)
+```
+
+##Proteomics
+
+Extract proteomic background for optimization.
+
+```{r}
+proteomics_filtered <- proteomics_ola %>%
+  filter(!is.na(EntrezID)) %>%
+  distinct(EntrezID, .keep_all = T)
+
+proteomics_signed <- proteomics_filtered %>%
+  dplyr::select(EntrezID, GeneSymbol, logFC) %>%
+  mutate(direction = sign(logFC))
+```
+
+###RNA vs Protein
+
+Compare RNA and protein signal to use this later in PKN filtering. As we have expression proteomics data, we correct some assumptions made based on transcriptomics data. Proteins/genes for which the trans and prot sign do not agree are corrected.
+
+```{r}
+trans_vs_prot <- transcriptomics_signed %>%
+  inner_join(proteomics_signed, by = "GeneSymbol") %>%
+  mutate(
+    rank_trans = dense_rank(logFC.x),
+    rank_prot = dense_rank(logFC.y)
+  )
+trans_vs_prot_direction <- trans_vs_prot %>%
+  mutate(agreement = ifelse(direction.x == direction.y, "same direction", "other direction"))
+```
+
+Prepare final data frame to filter metaPKN later.
+
+```{r}
+transcriptomics_proteomics_filtered <- transcriptomics_filtered %>%
+  left_join(dplyr::select(trans_vs_prot_direction, GeneSymbol, agreement), by = "GeneSymbol") %>%
+  mutate(agreement = ifelse(is.na(agreement), "no overlap", agreement)) %>%
+  mutate(FC = ifelse(agreement == "other direction", 0, FC))
+```
+
+##PKN
+
+### Choose PKN
+
+Define which PKN to use.
+
+```{r}
+meta_network <- COSMOS_PKN_new %>%
+  filter(!is.na(source) & !is.na(target)) %>%
+  setNames(c("source", "interaction", "target"))
+```
+
+### Kinase sign filtering
+
+Filter inconsistent edges btw TPP and Kinases (From Kinase sign filtering)
+
+```{r}
+KSN_TPPtargets_filt <- KSN_TPPtargets_filt %>%
+  separate(substrate_genesymbol, into = c("substrate_protein","substrate_site"), remove = F) %>% 
+  mutate(
+    source = as.character(paste0("X", mapIds(org.Hs.eg.db, enzyme_genesymbol, "ENTREZID", "SYMBOL"))),
+    target = as.character(paste0("X", mapIds(org.Hs.eg.db, substrate_protein, "ENTREZID", "SYMBOL")))
+  ) %>%
+  filter(source != "XNA" & target != "XNA")
+
+meta_network <- meta_network %>%
+  anti_join(KSN_TPPtargets_filt, by = c("source", "target"))
+```
+# Forward runs
+
+## Set signaling input
+
+The signaling input is the upstream part of the optimization
+
+```{r}
+signaling_input_COSMOS <- c(Kinases_input_COSMOS, TPP_input_COSMOS)
+
+# remove overlpas of TPP and Kinases, keep kinase activity estimate
+signaling_input_COSMOS <- signaling_input_COSMOS[!duplicated(names(signaling_input_COSMOS))]
+
+# sbring in CARNIVAL accepted format
+names(signaling_input_COSMOS) <- as.character(names(signaling_input_COSMOS))
+signaling_input_COSMOS <- t(as.matrix(signaling_input_COSMOS)) %>% as.data.frame()
+```
+
+## Set TF 
+
+The TF input is the downstream part of the optimization
+
+```{r}
+TF_input_COSMOS <- t(c(TF_input_COSMOS)) %>% as.data.frame()
+```
+
+## Set weights
+
+```{r}
+weights_COSMOS <- t(TPP_input_COSMOS_weights) %>% as.data.frame()
+weights_COSMOS <- weights_COSMOS[!is.na(names(weights_COSMOS))]
+
+# scale weights btw 1 and -1 --> does not change results in comp to discrete 1/-1 weights
+range_COSMOSweights <- function(x) {
+  2 * ((x - min(x)) / (max(x) - min(x))) - 1
+}
+
+weights_COSMOS <- range_COSMOSweights(weights_COSMOS)
+```
+
+
+## Filter PKN: expressed genes
+
+Filter metaPKN for nodes relevant acording to expressed gene list (from RNA seq)
+
+```{r}
+# meta_network_expressionfiltered <- expanded_meta_network
+
+meta_network_expressionfiltered <- meta_network
+
+signaling <- colnames(signaling_input_COSMOS)
+measurement <- colnames(TF_input_COSMOS)
+
+expressed_gene_list <- c(names(RNA_input_COSMOS), signaling, measurement)
+expressed_gene_list <- gsub("X", "", expressed_gene_list) %>% unique()
+
+
+meta_network_expressionfiltered$source <-
+  sapply(meta_network_expressionfiltered$source, is_expressed)
+meta_network_expressionfiltered <-
+  meta_network_expressionfiltered[complete.cases(meta_network_expressionfiltered), ]
+meta_network_expressionfiltered$target <-
+  sapply(meta_network_expressionfiltered$target, is_expressed)
+meta_network_expressionfiltered <-
+  meta_network_expressionfiltered[complete.cases(meta_network_expressionfiltered), ]
+```
+
+## Filter input for PKN occurence
+
+```{r, message=FALSE, warning=FALSE}
+# filter inputs for thier occurance in the network
+TF_input_COSMOS_inPKN <- filter_inputs(TF_input_COSMOS, meta_network_expressionfiltered)
+signaling_input_COSMOS_inPKN <- filter_inputs(signaling_input_COSMOS, meta_network_expressionfiltered)
+
+# filter overlaps
+signaling_input_COSMOS_inPKN <- signaling_input_COSMOS_inPKN[, !(colnames(signaling_input_COSMOS_inPKN) %in% colnames(TF_input_COSMOS_inPKN))]
+```
+
+
+# Fw1
+
+## Filter input and PKN for fw1
+
+```{r, message=FALSE, warning=FALSE}
+# filter network for nodes which are maximum 8 nodes from measurement
+meta_network_final_fw1 <- downstream_neighbours(
+  meta_network_expressionfiltered,
+  8,
+  names(TF_input_COSMOS_inPKN)
+)
+
+# filter network for correct TF interaction signs
+
+meta_network_final_fw1_t1 <- filter_TF_sign(
+  meta_network = meta_network_final_fw1,
+  ttop_RNA = transcriptomics_filtered,
+  inputs = TF_input_COSMOS_inPKN,
+  TF_targets = dorothea
+)
+
+# filter according to transcriptomic-proteomics discrepancies
+
+meta_network_final_fw1_t2 <- filter_TF_sign(
+  meta_network = meta_network_final_fw1,
+  ttop_RNA = transcriptomics_proteomics_filtered,
+  inputs = TF_input_COSMOS_inPKN,
+  TF_targets = dorothea
+)
+
+meta_network_final_fw1 <- meta_network_final_fw1_t2
+
+# filter inputs for thier occurance in the network
+measurements_fw1 <- filter_inputs(TF_input_COSMOS_inPKN, meta_network_final_fw1)
+input_fw1 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_fw1)
+```
+
+
+## Run CARNIVAL
+
+```{r, eval = FALSE}
+# define options for CARNIVAL optimization
+timelimit <- 800
+mipGAP <- 0.15
+used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
+
+#beepr::beep(1)
+CARNIVAL_Result_fw1 <- runCARNIVAL(
+  solverPath = solverPath,
+  netObj = meta_network_final_fw1,
+  measObj = measurements_fw1,
+  inputObj = input_fw1,
+  weightObj = weights_COSMOS,
+  timelimit = timelimit,
+  mipGAP = mipGAP,
+  solver = "cplex"
+)
+
+COSMOS_object_fw1 <- structure(list(
+  meta_network = meta_network_final_fw1,
+  weightedSIF = as.data.frame(CARNIVAL_Result_fw1$weightedSIF),
+  nodeAtt = as.data.frame(CARNIVAL_Result_fw1$nodesAttributes),
+  history = c(runID)
+),
+used_options = used_options,
+class = "cosmos_data"
+)
+
+#beepr::beep(3)
+```
+
+# Fw2
+
+## Filter input for fw2
+
+```{r, message=FALSE, warning=FALSE, eval = FALSE}
+TF_signs_fw1 <- get_TF_sign_from_CARNI(CARNIVAL_Result_fw1, dorothea)
+meta_network_final_fw2_t1 <- filter_TF_sign(
+  meta_network = meta_network_final_fw1,
+  ttop_RNA = transcriptomics_filtered,
+  inputs = TF_signs_fw1,
+  TF_targets = dorothea
+)
+
+meta_network_final_fw2_t2 <- filter_TF_sign(
+  meta_network = meta_network_final_fw1,
+  ttop_RNA = transcriptomics_proteomics_filtered,
+  inputs = TF_signs_fw1,
+  TF_targets = dorothea
+)
+
+meta_network_final_fw2 <- meta_network_final_fw2_t2
+
+measurements_fw2 <- filter_inputs(TF_input_COSMOS_inPKN, meta_network_final_fw2)
+input_fw2 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_fw2)
+```
+
+## Run CARNIVAL
+
+```{r, eval = FALSE}
+# define options for CARNIVAL optimization
+timelimit <- 500
+mipGAP <- 0.15
+used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
+
+beepr::beep(1)
+CARNIVAL_Result_fw2 <- runCARNIVAL(
+  solverPath = solverPath,
+  netObj = meta_network_final_fw2,
+  measObj = measurements_fw2,
+  inputObj = input_fw2,
+  weightObj = weights_COSMOS,
+  timelimit = timelimit,
+  mipGAP = mipGAP,
+  solver = "cplex"
+) 
+
+COSMOS_object_fw2 <- structure(list(
+  meta_network = meta_network_final_fw2,
+  weightedSIF = as.data.frame(CARNIVAL_Result_fw2$weightedSIF),
+  nodeAtt = as.data.frame(CARNIVAL_Result_fw2$nodesAttributes),
+  history = c(runID)
+),
+used_options = used_options,
+class = "cosmos_data"
+)
+beepr::beep(3)
+```
+
+# Reverse runs
+
+Set up new run hierarchy
+
+## TF input
+
+```{r}
+TF_input_COSMOS <- sign(viper_trans_top$NES)
+
+names(TF_input_COSMOS) <- paste0("X", mapIds(org.Hs.eg.db, viper_trans_top$regulator, "ENTREZID", "SYMBOL"))
+
+TF_input_COSMOS <- TF_input_COSMOS[names(TF_input_COSMOS) != "XNA"]
+names(TF_input_COSMOS) <- as.character(names(TF_input_COSMOS))
+
+TF_input_COSMOS <- t(c(TF_input_COSMOS, TPP_input_COSMOS)) %>% as.data.frame()
+TF_input_COSMOS <- TF_input_COSMOS[!duplicated(names(TF_input_COSMOS))]
+```
+
+## Signaling input
+
+```{r}
+signaling_input_COSMOS <- t(Kinases_input_COSMOS) %>% as.data.frame()
+```
+
+## Weights
+
+```{r}
+weights_COSMOS <- t(TPP_input_COSMOS_weights) %>% as.data.frame()
+weights_COSMOS <- weights_COSMOS[!is.na(names(weights_COSMOS))]
+
+# scale weights
+weights_COSMOS <- range_COSMOSweights(weights_COSMOS)
+```
+
+## Filter PKN: expressed genes
+
+Filter metaPKN for nodes relevant acording to expressed gene list
+
+```{r}
+# meta_network_expressionfiltered <- expanded_meta_network
+meta_network_expressionfiltered <- meta_network
+
+signaling <- colnames(signaling_input_COSMOS)
+measurement <- colnames(TF_input_COSMOS)
+
+expressed_gene_list <- c(names(RNA_input_COSMOS), signaling, measurement)
+expressed_gene_list <- gsub("X", "", expressed_gene_list) %>% unique()
+
+
+meta_network_expressionfiltered$source <-
+  sapply(meta_network_expressionfiltered$source, is_expressed)
+meta_network_expressionfiltered <-
+  meta_network_expressionfiltered[complete.cases(meta_network_expressionfiltered), ]
+meta_network_expressionfiltered$target <-
+  sapply(meta_network_expressionfiltered$target, is_expressed)
+meta_network_expressionfiltered <-
+  meta_network_expressionfiltered[complete.cases(meta_network_expressionfiltered), ]
+```
+
+## Filter input for PKN occurence
+
+```{r, message=FALSE, warning=FALSE}
+# filter inputs for thier occurance in the network
+TF_input_COSMOS_inPKN <- filter_inputs(TF_input_COSMOS, meta_network_expressionfiltered)
+signaling_input_COSMOS_inPKN <- filter_inputs(signaling_input_COSMOS, meta_network_expressionfiltered)
+
+# filter overlaps
+signaling_input_COSMOS_inPKN <- signaling_input_COSMOS_inPKN[, !(colnames(signaling_input_COSMOS_inPKN) %in% colnames(TF_input_COSMOS_inPKN))]
+
+# filter one node because of strange error message
+signaling_input_COSMOS_inPKN <- signaling_input_COSMOS_inPKN[!grepl("X1786$", names(signaling_input_COSMOS_inPKN))]
+names(signaling_input_COSMOS_inPKN) <- gsub("\\.1", "", names(signaling_input_COSMOS_inPKN))
+```
+
+# Rev1
+
+## Filter input for Rev1
+
+```{r, message=FALSE, warning=FALSE}
+# filter network for nodes which are maximum 8 nodes from measurement
+meta_network_final_rev1 <- downstream_neighbours(
+  meta_network_expressionfiltered,
+  8,
+  names(signaling_input_COSMOS_inPKN)
+)
+
+# filter network for correct TF interaction signs
+# dorothea <- format_dorothea()
+meta_network_final_rev1_t1 <- filter_TF_sign(
+  meta_network = meta_network_final_rev1,
+  ttop_RNA = transcriptomics_filtered,
+  inputs = TF_input_COSMOS_inPKN,
+  TF_targets = dorothea
+)
+
+meta_network_final_rev1_t2 <- filter_TF_sign(
+  meta_network = meta_network_final_rev1,
+  ttop_RNA = transcriptomics_proteomics_filtered,
+  inputs = TF_input_COSMOS_inPKN,
+  TF_targets = dorothea
+)
+
+meta_network_final_rev1 <- meta_network_final_rev1_t2
+
+# filter inputs for thier occurance in the network
+measurements_rev1 <- filter_inputs(TF_input_COSMOS_inPKN, meta_network_final_rev1)
+input_rev1 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_rev1)
+```
+
+## Run CARNIVAL
+
+```{r, eval = FALSE}
+# define options for CARNIVAL optimization
+timelimit <- 500
+mipGAP <- 0.15
+used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
+
+beepr::beep(1)
+CARNIVAL_Result_rev1 <- runCARNIVAL(
+  solverPath = solverPath,
+  netObj = meta_network_final_rev1,
+  measObj = measurements_rev1,
+  inputObj = input_rev1,
+  weightObj = weights_COSMOS,
+  timelimit = timelimit,
+  mipGAP = mipGAP,
+  solver = "cplex",
+  dir_name = "/Users/miraburtscher/Documents/gsk/O2_Network_modeling/tmp"
+)
+
+COSMOS_object_rev1 <- structure(list(
+  meta_network = meta_network_final_rev1,
+  weightedSIF = as.data.frame(CARNIVAL_Result_rev1$weightedSIF),
+  nodeAtt = as.data.frame(CARNIVAL_Result_rev1$nodesAttributes),
+  history = c(runID)
+),
+used_options = used_options,
+class = "cosmos_data"
+)
+beepr::beep(3)
+```
+
+# rev2
+
+## Filter input for rev2
+
+```{r, message=FALSE, warning=FALSE, eval = FALSE}
+TF_signs_rev1 <- get_TF_sign_from_CARNI(CARNIVAL_Result_rev1, dorothea)
+meta_network_final_rev2_t1 <- filter_TF_sign(
+  meta_network = meta_network_final_rev1,
+  ttop_RNA = transcriptomics_filtered,
+  inputs = TF_signs_rev1,
+  TF_targets = dorothea
+)
+
+meta_network_final_rev2_t2 <- filter_TF_sign(
+  meta_network = meta_network_final_rev1,
+  ttop_RNA = transcriptomics_proteomics_filtered,
+  inputs = TF_signs_rev1,
+  TF_targets = dorothea
+)
+
+meta_network_final_rev2 <- meta_network_final_rev2_t2
+
+measurements_rev2 <- filter_inputs(TF_input_COSMOS_inPKN, meta_network_final_rev2)
+input_rev2 <- filter_inputs(signaling_input_COSMOS_inPKN, meta_network_final_rev2)
+```
+
+## Run CARNIVAL
+
+```{r, eval = FALSE}
+
+# define options for CARNIVAL optimization
+timelimit <- 500
+mipGAP <- 0.15
+used_options <- c(as.character(timelimit), as.character(mipGAP), solverPath)
+
+beepr::beep(1)
+CARNIVAL_Result_rev2 <- runCARNIVAL(
+  solverPath = solverPath,
+  netObj = meta_network_final_rev2,
+  measObj = measurements_rev2,
+  inputObj = input_rev2,
+  weightObj = weights_COSMOS,
+  timelimit = timelimit,
+  mipGAP = mipGAP,
+  solver = "cplex",
+  dir_name = "/Users/miraburtscher/Documents/gsk/O2_Network_modeling/tmp"
+)
+
+COSMOS_object_rev2 <- structure(list(
+  meta_network = meta_network_final_rev2,
+  weightedSIF = as.data.frame(CARNIVAL_Result_rev2$weightedSIF),
+  nodeAtt = as.data.frame(CARNIVAL_Result_rev2$nodesAttributes),
+  history = c(runID)
+),
+used_options = used_options,
+class = "cosmos_data"
+)
+beepr::beep(3)
+```
+
+# Save
+
+```{r, eval = FALSE}
+save(COSMOS_object_fw1, COSMOS_object_fw2, COSMOS_object_rev1, COSMOS_object_rev2,
+  file = paste0("C:/Users/burtsche/Documents/COSMOS-TPP_paper/results/", runID, ".RData")
+)
+```

@@ -1,0 +1,159 @@
+---
+title: "Script for robustness analysis"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    theme: united
+    code_folding: hide
+---
+
+
+This script shows how different COSMOS results of replicate runs were compared to infer information about the robustness of the optimization.  
+
+# General settings
+
+Set some knitr parameter and the working directory.
+
+```{r setup}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  include = TRUE,
+  cache = TRUE,
+  cache.lazy = FALSE,
+  eval = TRUE,
+  fig.width = 8 * (1 + sqrt(5)) / 2, fig.height = 8 # golden ratio
+)
+
+knitr::opts_knit$set(root.dir = "C:/Users/burtsche/Documents/COSMOS-TPP_paper")
+```
+
+## Load packages
+
+```{r, message=F, warning =F}
+library(plyr)
+library(tidyverse) # ggplot2, purrr, tibble, dplyr, tidyr, stringr, readr, forcats
+library("reshape2")
+library(OmnipathR)
+library(ggrepel)
+# options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(knitr)
+library(ggpubr)
+
+mutate <- dplyr::mutate
+select <- dplyr::select
+group_by <- dplyr::group_by
+#devtools::install_github("saezlab/CARNIVAL@v1.3")
+
+source("src/revision_COSMOS_functions.R")
+```
+
+# Load networks
+
+ These networks were modelled as described with varying numbers of TPP proteins according to a monotony score introduced before (large), Fstatistic as the default option (medium) and a manual curation of high confidence hits (small). These we compared to networks without TPP.
+
+```{r}
+load("results/networks/220531_mergednetworkresults_robustness.RData")
+```
+
+# Plotting info 
+
+```{r}
+values_types =  c("TPP" = "mediumseagreen",
+                  "Kinase" =  "darkcyan", 
+                  "TF" = "#8b0a50",
+                  "other" = "gray40")
+
+values_TPPset_paper =  c("large" = "brown",
+                   "medium" =  "indianred", 
+                  "small" = "lightcoral",
+                   "noTPP" = "peachpuff")
+
+values_model =  c("input node modelled" =  "darkred", 
+            "input node not modelled" = "indianred",
+            "PKN node" = "gray80")
+
+values_PKN_paper =  c("PKN2" =  "maroon", 
+            "PKN1" = "goldenrod1")
+
+```
+
+
+# Robustness heatmap
+
+## Extract relevant data frames from result objects
+
+Nodes
+
+```{r}
+nodes <- map_dfr(result_list, 'nodes', .id = "networkID")%>% 
+  dplyr::select(networkID, label, measured)
+```
+
+Node attributes
+
+```{r}
+nodes <- map_dfr(network_list, 'overall_node_summary', .id = "networkID") %>% 
+  separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F) %>% 
+  left_join(nodes, by = c("networkID", "node" = "label")) %>% 
+  mutate(model = gsub("input", "input node modelled", model),
+         model = gsub("missed", "input node not modelled", model),
+          model = gsub("additional", "PKN node", model))
+```
+
+
+### Heatmap
+
+Clustering network replicates based on node activities 
+
+```{r}
+pheatmap_input2_COSMOS <- nodes %>%
+  filter(model != "missed") %>% 
+  mutate(conv = ifelse(measured == "inactive", -1, 0),
+         conv = ifelse(measured == "active", 1, conv)) %>% 
+  distinct(networkID, node, .keep_all = T)%>%
+  acast(networkID ~ node, value.var = "conv", fill = 0)
+
+annotation_cols <- data.frame(Node = colnames(pheatmap_input2_COSMOS))%>%
+  left_join(distinct(nodes, node, type), by = c("Node"= "node")) %>% 
+  arrange(desc(type)) %>% 
+  distinct(Node, .keep_all = T) %>%
+  column_to_rownames("Node")
+
+
+my_palette <- c(colorRampPalette(colors = c("#67001F"))(n = 1),
+              "gray91",
+              c(colorRampPalette(colors = c("darkgreen"))(n = 1)))
+
+pheatmap_input2_COSMOS <- pheatmap_input2_COSMOS[, abs(colSums(pheatmap_input2_COSMOS)) > 1]
+
+
+annotation_rows <- data.frame(id = rownames(pheatmap_input2_COSMOS)) %>% 
+  separate(id, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F) %>% 
+  dplyr::select(-replicate) %>% 
+  column_to_rownames("id")
+
+annotation_colors = list(
+  type = values_types,
+  TPP_set = values_TPPset_paper,
+  PKN = values_PKN_paper)
+
+p_heatmap_nodes2 <- pheatmap::pheatmap(pheatmap_input2_COSMOS, 
+                   show_colnames = F, show_rownames = F,
+                   annotation_col = annotation_cols,
+                   annotation_colors = annotation_colors,
+                   treeheight_col = 0, 
+                   annotation_row = annotation_rows, 
+                   color = my_palette,
+                   legend_breaks = c(-0.8, 0, 0.8), 
+                   legend_labels = c("inactive", "missed", "active"), 
+                   fontsize = 10)
+
+```
+
+
+
+
