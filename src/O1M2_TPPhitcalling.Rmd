@@ -213,7 +213,7 @@ plot2dTppFit(recomp_sig_df, "CHEK2",
   model_type = "H1"
 )
 
-save(TPPFstatistic_hits, file = "results/211007_TPPfstathits_UWB24h")
+save(TPPFstatistic_hits, file = "results/211007_TPPfstathits_UWB24h.RData")
 ```
 
 Load the results to avoid recalculation
