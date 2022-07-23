@@ -57,6 +57,144 @@ group_by <- dplyr::group_by
 
 ## Functions
 
+Function 1: extract and annotate relevant dfs of COSMOS rsult object for plotting and analysis.
+
+```{r}
+network_processing <- function(COSMOS_object_fw2, # result of the first run
+                               COSMOS_object_rev2, # result of the second run
+                               TPP_input, # TPP proteins used as input
+                               dorothea, # TF-target interactions
+                               KSN, # Kinase-target interactions
+                               all_input_nodes){ # all input nodes
+  TFs <- dorothea$source_genesymbol
+  Kinases <- KSN$enzyme_genesymbol
+  # get all nodes and convert to gene symbols
+  fw_nodes <- COSMOS_object_fw2$nodeAtt %>%
+  mutate(EntrezID = gsub("X", "", Node))
+  rev_nodes <- COSMOS_object_rev2$nodeAtt %>%
+  mutate(EntrezID = gsub("X", "", Node))
+  all_nodes_entrezid <- unique(c(fw_nodes$EntrezID, rev_nodes$EntrezID))
+  convertIDs <-  mapIds(org.Hs.eg.db, all_nodes_entrezid, 'SYMBOL', 'ENTREZID') 
+  # get networks, map to gene symbols and combine
+  fw_network <- COSMOS_object_fw2$weightedSIF
+  fw_network_mapped <- data.frame(from = convertIDs[gsub("X","",fw_network$Node1)],
+                                  sign = fw_network$Sign,
+                                  to = convertIDs[gsub("X","",fw_network$Node2)]) %>%
+                        mutate(smooth = TRUE,
+                               dashes = ifelse(sign > 0, FALSE, TRUE))  %>%
+                        distinct(from, sign, to, .keep_all = T)
+                        # filter out big artificial cluster
+                        # filter(from != "TP63")
+  rev_network <- COSMOS_object_rev2$weightedSIF
+  rev_network_mapped <- data.frame(from = convertIDs[gsub("X","",rev_network$Node1)],
+                                  sign = rev_network$Sign,
+                                  to = convertIDs[gsub("X","",rev_network$Node2)]) %>%
+    mutate(smooth = TRUE,
+           dashes = ifelse(sign > 0, FALSE, TRUE)) %>%
+    distinct(from, sign, to, .keep_all = T)
+  
+  combined_network <- rbind(fw_network_mapped, rev_network_mapped)
+  # extract activity information
+  all_nodes <- rbind(filter(fw_nodes, AvgAct != 0), filter(rev_nodes, AvgAct != 0))%>%
+  mutate(activity = ifelse(AvgAct > 0, "active", "inactive"))
+  node_activities <- all_nodes$activity
+  names(node_activities) <- mapIds(org.Hs.eg.db, all_nodes$EntrezID, 'SYMBOL', 'ENTREZID')
+  missing_nodes <- setdiff(unique(c(combined_network$from, combined_network$to)), names(node_activities))
+  dummy <- rep("not available", length(missing_nodes))
+  names(dummy) <- missing_nodes
+  node_activities <- c(node_activities, dummy)
+  # map all information to nodes table
+  mapped_nodes <- data.frame(id = unique(c(combined_network$from, combined_network$to)),
+                             label = unique(c(combined_network$from, combined_network$to))) %>%
+                  rowwise() %>%
+                  mutate(measured = node_activities[[id]]) 
+  mapped_nodes <- mapped_nodes %>%
+    mutate(type = ifelse(id %in% Kinases, "Kinase", "other"),
+           type = ifelse(id %in% TFs, "TF", type),
+           type = ifelse(id %in% TPP_input, "TPP", type),
+           shape = ifelse(id %in% all_input_nodes, "square", "triangle"),
+           group = paste(type, measured, sep = "_"),
+           title = paste0(label, "_", group))
+  # store into visNetwork input object
+  meta_data <- c(COSMOS_object_fw2$history, COSMOS_object_rev2$history)
+  visNetwork_object <- structure(list(fw_network = fw_network_mapped,
+                                      #fw_background = COSMOS_object_fw2$meta_network,
+                                      rev_network = rev_network_mapped,
+                                      #rev_background = COSMOS_object_rev2$meta_network,
+                                      combined_network = combined_network,
+                                      nodes = mapped_nodes,
+                                      metadata = meta_data,
+                                      class = "visNetworkinput"))
+  
+}
+```
+
+Function 2: extract main graph features of COSMOS networks
+
+```{r}
+network_checks <- function(visNetwork_object, # result of function 1
+                           TPP_input, 
+                           transcriptomic_regulators, 
+                           phosphoproteomic_regulators, 
+                           dorothea, 
+                           KSN){
+  # number of nodes and edges
+  no_edges <- nrow(as.data.frame(visNetwork_object$combined_network))
+  no_nodes <- nrow(as.data.frame(visNetwork_object$nodes))
+  # convert to igraph graph object
+  graph <-  graph_from_data_frame(as.data.frame(visNetwork_object$combined_network)[,c(1,3)], directed = TRUE, vertices = NULL)
+  # edge density
+  network_density <- edge_density(graph, loops = TRUE)
+  # node degree centrality
+  node_degrees <- degree(graph, v = V(graph), mode = "total",loops = TRUE, normalized = FALSE)
+  node_degrees <- data.frame(Node = names(node_degrees), degree = node_degrees)
+  # adjacency matrix
+  adj_matrix <- as_adjacency_matrix(graph, type ="both",attr = NULL, edges = FALSE, names = TRUE)
+  adj_matrix_m <- as.matrix(adj_matrix)
+  adj_matrix_m[adj_matrix_m == 2] <- 1
+  # all PKN nodes mapped to gene name identifiers
+  # PKN_nodes <- unique(c(visNetwork_object$fw_background[["source"]], visNetwork_object$fw_background[["target"]],
+  #                visNetwork_object$rev_background[["source"]], visNetwork_object$rev_background[["target"]]))
+  # PKN_nodes_mapped <- mapIds(org.Hs.eg.db, gsub("X", "", PKN_nodes), 'SYMBOL', 'ENTREZID')
+  # get input modeled, background modeled and missed input
+  # TPP
+  included_TPPhits <- intersect(visNetwork_object$nodes[["id"]], TPP_input)
+  missedTPPhits <- setdiff(TPP_input, visNetwork_object$nodes[["id"]])
+  #filtered_TPP <- setdiff(TPP_input, PKN_nodes_mapped)
+  # TF
+  included_TFs <- intersect(visNetwork_object$nodes[["id"]], transcriptomic_regulators)
+  missedTFs <- setdiff(transcriptomic_regulators, visNetwork_object$nodes[["id"]])
+  #filtered_TFs <- setdiff(transcriptomic_regulators, PKN_nodes_mapped)
+  # Kinases
+  included_kinases <- intersect(visNetwork_object$nodes[["id"]], phosphoproteomic_regulators)
+  missedkinases <- setdiff(phosphoproteomic_regulators, visNetwork_object$nodes[["id"]])
+  #filtered_kinases <- setdiff(phosphoproteomic_regulators, PKN_nodes_mapped)
+  # summary
+  input_nodes <- as.data.frame(visNetwork_object$nodes) %>% filter(shape == "square")
+  input_nodes <- input_nodes$id
+  additional_nodes <- as.data.frame(visNetwork_object$nodes) %>% filter(shape == "triangle")
+  additional_nodes <- additional_nodes$id
+  missed_nodes <- c(missedTPPhits, missedkinases, missedTFs)
+  summary = data.frame(node= c(input_nodes, additional_nodes, missed_nodes),
+                       model = c(rep("input", length(input_nodes)),
+                                  rep("additional", length(additional_nodes)),
+                                  rep("missed", length(missed_nodes)))) %>%
+    mutate( type = ifelse(node %in% KSN$enzyme_genesymbol, "Kinase",  "other"),
+            type = ifelse(node %in% dorothea$source_genesymbol, "TF",type),
+            type = ifelse(node %in% TPP_input, "TPP", type))
+  # build result object
+  result <- structure(list(no_edges = no_edges,
+                            no_nodes = no_nodes,
+                            graph = graph,
+                            adj_matrix = adj_matrix,
+                            adj_matrix_m = adj_matrix_m,
+                            node_degrees =node_degrees,
+                            network_density = network_density,
+                            overall_node_summary = summary))
+
+}
+```
+
 Enrichment functions for GO and RPA enrichments
 
 ```{r}
@@ -100,6 +238,8 @@ GSE_MF <- function(geneList, universe, ont) {
 load("data/KSN.RData")
 load("data/dorothea.RData")
 
+load("results/220512_cosmosinput_merged.RData")
+
 # to create universe for network level enrichment
 PKN_annotated <- read_tsv("data/GSK_Causal_Network_032021_Annotation.txt", show_col_types = FALSE)
 ```
@@ -109,7 +249,14 @@ PKN_annotated <- read_tsv("data/GSK_Causal_Network_032021_Annotation.txt", show_
 ```{r}
 load("data/220510_viper_footprints.RData")
 viper_kinases <- viperRes_phospho_corrected %>%
-  filter(condition_long == "UWB1.289_24h_4uM") %>%
+  arrange(desc(absNES)) %>%
+  slice_head(n = 30) %>%
+  #adjust format to network nomenclature
+  mutate(measured = ifelse(NES < 0, "inactive", "active"), type = "Kinase", node = regulator) %>%
+  select(id = regulator, node, measured, type)
+
+
+viper_TFs <- viperRes_trans %>%
   arrange(desc(absNES)) %>%
   slice_head(n = 30) %>%
   #adjust format to network nomenclature
@@ -157,18 +304,117 @@ AP2_members <- pathwaymembers %>%
 
 # Load and process networks 
 
-```{r}
-load("data/2022_02_17_MasterThesis_networks.RData")
+
+```{r, eval = F}
+# noTPP
+all_input_nodes <- c(viper_TFs$id, viper_kinases$id)
+noTPP <- c()
+
+load("results/networks/2021_08_22_10_04_11_noTPP_PKN1_rep1.RData")
+res_noTPP_PKN1_rep1 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, noTPP, dorothea, KSN, all_input_nodes)
+netprop_noTPP_PKN1_rep1 <- network_checks(res_noTPP_PKN1_rep1, noTPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+load("results/networks/2021_08_22_21_30_33_noTPP_PKN1_rep2.RData")
+res_noTPP_PKN1_rep2 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, noTPP, dorothea, KSN, all_input_nodes)
+netprop_noTPP_PKN1_rep2 <- network_checks(res_noTPP_PKN1_rep2, noTPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+load("results/networks/2021_08_23_07_36_48_noTPP_PKN1_rep3.RData")
+res_noTPP_PKN1_rep3 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, noTPP, dorothea, KSN, all_input_nodes)
+netprop_noTPP_PKN1_rep3 <- network_checks(res_noTPP_PKN1_rep3, noTPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+## PKN2
+
+load("results/networks/2021_09_09_12_03_31_noTPP_PKN2_rep1.RData")
+res_noTPP_PKN2_rep1 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, noTPP, dorothea, KSN, all_input_nodes)
+netprop_noTPP_PKN2_rep1 <- network_checks(res_noTPP_PKN2_rep1, noTPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+load("results/networks/2021_09_09_15_08_40_noTPP_PKN2_rep2.RData")
+res_noTPP_PKN2_rep2 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, noTPP, dorothea, KSN, all_input_nodes)
+netprop_noTPP_PKN2_rep2 <- network_checks(res_noTPP_PKN2_rep2, noTPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+
+load("results/networks/2021_09_09_17_51_40_noTPP_PKN2_rep3.RData")
+res_noTPP_PKN2_rep3 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, noTPP, dorothea, KSN, all_input_nodes)
+netprop_noTPP_PKN2_rep3 <- network_checks(res_noTPP_PKN2_rep3, noTPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+# withTPP
+all_input_nodes <- c(viper_TFs$id, viper_kinases$id, TPP_cosmos_input_final$TPP_protein)
+TPP <- TPP_cosmos_input_final$TPP_protein
+
+load("results/networks/2021_08_26_10_59_55_withTPP_PKN1_rep1.RData")
+res_withTPP_PKN1_rep1 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, TPP, dorothea, KSN, all_input_nodes)
+netprop_withTPP_PKN1_rep1 <- network_checks(res_withTPP_PKN1_rep1, TPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+load("results/networks/2021_08_26_13_46_35_withTPP_PKN1_rep2.RData")
+res_withTPP_PKN1_rep2 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, TPP, dorothea, KSN, all_input_nodes)
+netprop_withTPP_PKN1_rep2 <- network_checks(res_withTPP_PKN1_rep2, TPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+
+load("results/networks/2021_08_26_15_29_33_withTPP_PKN1_rep3.RData")
+res_withTPP_PKN1_rep3 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, TPP, dorothea, KSN, all_input_nodes)
+netprop_withTPP_PKN1_rep3 <- network_checks(res_withTPP_PKN1_rep3, TPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+## PKN2
+
+load("results/networks/2021_09_05_12_15_40_withTPP_PKN2_rep1.RData")
+res_withTPP_PKN2_rep1 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, TPP, dorothea, KSN, all_input_nodes)
+netprop_withTPP_PKN2_rep1 <- network_checks(res_withTPP_PKN2_rep1, TPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+load("results/networks/2021_09_05_18_59_21_withTPP_PKN2_rep2.RData")
+res_withTPP_PKN2_rep2 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, TPP, dorothea, KSN, all_input_nodes)
+netprop_withTPP_PKN2_rep2 <- network_checks(res_withTPP_PKN2_rep2, TPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+
+load("results/networks/2021_09_06_01_41_33_withTPP_PKN2_rep3.RData")
+res_withTPP_PKN2_rep3 = network_processing(COSMOS_object_fw2, COSMOS_object_rev2, TPP, dorothea, KSN, all_input_nodes)
+netprop_withTPP_PKN2_rep3 <- network_checks(res_withTPP_PKN2_rep3, TPP, viper_TFs$id, viper_kinases$id, dorothea, KSN)
+
+rm(COSMOS_object_fw1, COSMOS_object_fw2, COSMOS_object_rev1, COSMOS_object_rev2)
 ```
 
-Format networks
+```{r, eval = F}
+result_list <- mget(ls(pattern= "^res_"))
+names(result_list) <- c("res_noTPP_PKN1_rep1","res_noTPP_PKN1_rep2","res_noTPP_PKN1_rep3",
+                        "res_noTPP_PKN2_rep1","res_noTPP_PKN2_rep2",   "res_noTPP_PKN2_rep3",
+                        "res_withTPP_PKN1_rep1","res_withTPP_PKN1_rep2", "res_withTPP_PKN1_rep3", 
+                        "res_withTPP_PKN2_rep1", "res_withTPP_PKN2_rep2", "res_withTPP_PKN2_rep3") 
+
+network_list <- mget(ls(pattern= "^netprop_"))
+names(network_list) <- c("netprop_noTPP_PKN1_rep1","netprop_noTPP_PKN1_rep2","netprop_noTPP_PKN1_rep3",
+                         "netprop_noTPP_PKN2_rep1","netprop_noTPP_PKN2_rep2","netprop_noTPP_PKN2_rep3",  
+                         "netprop_withTPP_PKN1_rep1", "netprop_withTPP_PKN1_rep2", "netprop_withTPP_PKN1_rep3",
+                         "netprop_withTPP_PKN2_rep1", "netprop_withTPP_PKN2_rep2", "netprop_withTPP_PKN2_rep3") 
+
+rm(list = ls(pattern= "^res_"))
+rm(list = ls(pattern= "^netprop_"))
+```
+
+
+## Save collapsed network objects
+
+```{r, eval = F}
+save(result_list, network_list, file = "results/networks/220531_mergednetworkresults.RData")
+```
+
+```{r}
+load("results/networks/220531_mergednetworkresults.RData")
+```
+
+
+```{r}
+#load("data/2022_02_17_MasterThesis_networks.RData")
+```
+
+## Format networks
 
 ```{r}
 nodes <- map_dfr(result_list, "nodes", .id = "networkID") %>%
+  mutate(networkID = gsub("^res_", "", networkID)) %>% 
   dplyr::select(networkID, label, measured)
 
 nodes <- map_dfr(network_list, "overall_node_summary", .id = "networkID") %>%
-  separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F) %>%
+  mutate(networkID = gsub("^netprop_", "", networkID)) %>% 
+  separate(networkID, into = c("TPP_set", "PKN", "replicate"), sep = "_", remove = F) %>%
   left_join(nodes, by = c("networkID", "node" = "label")) %>%
   mutate(
     model = gsub("input", "input node modelled", model),
@@ -178,30 +424,31 @@ nodes <- map_dfr(network_list, "overall_node_summary", .id = "networkID") %>%
   )
 
 edges <- map_dfr(result_list, "combined_network", .id = "networkID") %>%
+  mutate(networkID = gsub("^res_", "", networkID)) %>% 
   mutate(edge_combined = paste(from, sign, to, sep = "_")) %>%
   distinct(networkID, edge_combined, .keep_all = T) %>%
-  separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F)
+  separate(networkID, into = c("TPP_set", "PKN", "replicate"), sep = "_", remove = F)
 ```
 
 Extract F-statistic results and results without TPP
 
 ```{r}
-F_stat_edges <- filter(edges, TPP_set == "Fstatistic") %>%
+withTPP_edges <- filter(edges, TPP_set == "withTPP") %>%
   distinct(edge_combined, .keep_all = T)
 
-F_stat_nodes <- data.frame(id = unique(c(F_stat_edges$from, F_stat_edges$to))) %>%
+withTPP_nodes <- data.frame(id = unique(c(withTPP_edges$from, withTPP_edges$to))) %>%
   left_join(distinct(nodes, id, .keep_all = T)) %>%
   mutate(group = paste(type, measured, sep = "_"))
 
-F_stat_nodes <- nodes %>%
-  filter(TPP_set == "Fstatistic" & model != "input node not modelled" & measured != "not available") %>%
+withTPP_nodes <- nodes %>%
+  filter(TPP_set == "withTPP" & model != "input node not modelled" & measured != "not available") %>%
   distinct(id, .keep_all = T) %>%
   mutate(group = paste(type, measured, sep = "_"))
 
 # annotate with footprinting information 
-F_stat_nodes <- bind_rows(
-  filter(viper_kinases, id %in% F_stat_nodes$id) %>% mutate(model = "input node modelled"),
-  F_stat_nodes
+withTPP_nodes <- bind_rows(
+  filter(viper_kinases, id %in% withTPP_nodes$id) %>% mutate(model = "input node modelled"),
+  withTPP_nodes
 ) %>%
   distinct(id, .keep_all = T) %>%
   mutate(group = paste(type, measured, sep = "_"))
@@ -212,9 +459,14 @@ noTPP_edges <- filter(edges, TPP_set == "noTPP") %>%
 noTPP_nodes <- data.frame(id = unique(c(noTPP_edges$from, noTPP_edges$to))) %>%
   left_join(distinct(nodes, id, .keep_all = T)) %>%
   mutate(group = paste(type, measured, sep = "_"))
+
+noTPP_nodes <- nodes %>%
+  filter(TPP_set == "noTPP" & model != "input node not modelled" & measured != "not available") %>%
+  distinct(id, .keep_all = T) %>%
+  mutate(group = paste(type, measured, sep = "_"))
 ```
 
-## Enrichment
+# Enrichment
 
 ```{r, message=F, warning=F}
 # universe built from PKN
@@ -222,8 +474,9 @@ pathways_universe <- data.frame(protein = unique(c(PKN_annotated$GeneA, PKN_anno
 
 # get gathered pathway input
 pathway_input_gathered <- map_dfr(result_list, 'nodes', .id = "networkID") %>% 
+  mutate(networkID = gsub("^res_", "", networkID)) %>%
   dplyr::select(networkID, id) %>% 
-  filter(grepl("noTPP|Fstat", networkID))
+  filter(grepl("noTPP|withTPP", networkID))
 
 gene_lists <- pathway_input_gathered %>% 
   group_by(networkID) %>% 
@@ -237,7 +490,7 @@ pathway_enrichment <- pathway_input_gathered %>%
 pathway_enrichment_unnest <- pathway_enrichment %>% 
   distinct(networkID, enrichment) %>% 
   unnest() %>% 
-  separate(networkID, into = c("TPP_set", "replicate", "PKN"), sep = "_", remove = F) %>% 
+  separate(networkID, into = c("TPP_set", "PKN", "replicate"), sep = "_", remove = F) %>% 
   left_join(gene_lists, by = "networkID")
 ```
 
@@ -275,7 +528,7 @@ pathways_noTPP <- pathways_perstrategy %>%
  filter(TPP_set == "noTPP" )
 ```
 
-### Paper
+### Compare enrichment
 
 ```{r, fig.width=4, fig.height=4}
 
@@ -341,7 +594,7 @@ p
 
 ```{r}
 set.seed(1)
-p <- visNetwork(F_stat_nodes, F_stat_edges) %>%
+p <- visNetwork(withTPP_nodes, withTPP_edges) %>%
   visGroups(groupname = "TPP_active", color = "mediumseagreen") %>%
   visGroups(groupname = "TPP_inactive", color = "palegreen") %>%
   visGroups(groupname = "TF_active", color = "#8b0a50") %>%
@@ -357,7 +610,10 @@ p <- visNetwork(F_stat_nodes, F_stat_edges) %>%
   visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
   visNetwork::visIgraphLayout(layout = "layout_with_kk")
 p
+```
 
+
+```{r}
 set.seed(1)
 p <- visNetwork(noTPP_nodes, noTPP_edges) %>%
   visGroups(groupname = "TPP_active", color = "mediumseagreen") %>%
@@ -383,21 +639,21 @@ p
 Cluster network and annotate nodes with cluster information
 
 ```{r}
-graph_Fstat <- F_stat_edges %>%
+graph_withTPP <- withTPP_edges %>%
   select(from, to, sign) %>%
   distinct(from, to, .keep_all = T) %>%
   graph_from_data_frame()
 
-graph_UD <- as.undirected(graph_Fstat, mode = "collapse")
+graph_UD <- as.undirected(graph_withTPP, mode = "collapse")
 cfg <- igraph::cluster_fast_greedy(graph_UD)
 
-n_clusters_Fstat <- length(unique(cfg$membership))
-n_clusters_Fstat
+n_clusters_withTPP <- length(unique(cfg$membership))
+n_clusters_withTPP
 
-clusters_Fstat <- data.frame(node = cfg$names, cluster = cfg$membership)
+clusters_withTPP <- data.frame(node = cfg$names, cluster = cfg$membership)
 
-F_stat_nodes <- F_stat_nodes %>%
-  left_join(clusters_Fstat, by = "node") %>%
+withTPP_nodes <- withTPP_nodes %>%
+  left_join(clusters_withTPP, by = "node") %>%
   mutate(cluster = as.factor(cluster))
 ```
 
@@ -422,18 +678,18 @@ pal <- c(
   "7" = "#BBBBBB"
 )
 
-target <- clusters_Fstat$node
-F_stat_nodes <- F_stat_nodes[match(target, F_stat_nodes$id), ] %>% 
-  mutate(shape = factor(F_stat_nodes$cluster))
+target <- clusters_withTPP$node
+withTPP_nodes <- withTPP_nodes[match(target, withTPP_nodes$id), ] %>% 
+  mutate(shape = factor(withTPP_nodes$cluster))
 
 set.seed(4)
-p <- ggraph(graph_Fstat, layout = "fr") +
+p <- ggraph(graph_withTPP, layout = "fr") +
   geom_edge_link(
     colour = "grey50",
     end_cap = circle(3, "mm"),
     start_cap = circle(3, "mm")
   ) +
-  geom_node_point(aes(colour = F_stat_nodes$cluster), size = 6) +
+  geom_node_point(aes(colour = withTPP_nodes$cluster), size = 6) +
   scale_colour_manual(values = pal) +
  # scale_shape_manual(values = c(15:20, 25)) +
   theme_graph() +
@@ -449,14 +705,14 @@ p
 # PKN as universe
 universe <- unique(c(PKN_annotated$GeneA, PKN_annotated$GeneB))
 
-pathwayenrichment_cluster <- F_stat_nodes %>%
+pathwayenrichment_cluster <- withTPP_nodes %>%
   group_by(cluster) %>%
   mutate(enrichment = list(as.data.frame(GSE_RPA(
     geneList = id,
     universe = universe
   ))))
 
-pathway_enrichment_unnest_Fstat <- pathwayenrichment_cluster %>%
+pathway_enrichment_unnest_withTPP <- pathwayenrichment_cluster %>%
   distinct(cluster, enrichment) %>%
   unnest()
 ```
@@ -464,7 +720,7 @@ pathway_enrichment_unnest_Fstat <- pathwayenrichment_cluster %>%
 Extract top pathways per cluster
 
 ```{r}
-pathway_enrichment_top3cluster <- pathway_enrichment_unnest_Fstat %>%
+pathway_enrichment_top3cluster <- pathway_enrichment_unnest_withTPP %>%
   filter(Count > 2) %>%
   ungroup() %>%
   mutate(corr_p_value = -log10(p.adjust)) %>%
@@ -482,8 +738,8 @@ pathway_nodes <- data.frame(
 )
 
 # simplify graph to cluster level information
-V(graph_Fstat)$name <- F_stat_nodes$cluster
-g_cont <- contract(graph_Fstat, membership(cfg), vertex.attr.comb = toString)
+V(graph_withTPP)$name <- withTPP_nodes$cluster
+g_cont <- contract(graph_withTPP, membership(cfg), vertex.attr.comb = toString)
 
 g_simp <- as_data_frame(igraph::simplify(g_cont)) %>%
   mutate(from = gsub(",.*$", "", from), to = gsub(",.*$", "", to)) %>%
@@ -492,7 +748,7 @@ g_simp <- as_data_frame(igraph::simplify(g_cont)) %>%
 ```
 
 ```{r}
-pathway_enrichment_topcluster <- pathway_enrichment_unnest_Fstat %>%
+pathway_enrichment_topcluster <- pathway_enrichment_unnest_withTPP %>%
   dplyr::ungroup() %>%
   dplyr::mutate(corr_p_value = -log10(p.adjust)) %>%
   dplyr::group_by(cluster) %>%
@@ -501,46 +757,6 @@ pathway_enrichment_topcluster <- pathway_enrichment_unnest_Fstat %>%
 
 pathway_enrichment_topcluster %>% select(cluster, Description, qvalue)
 ```
-
-
-```{r , fig.width=15, fig.height=10}
-nodes <- data.frame(
-  clusterID = V(g_simp)$name,
-  cluster = gsub("_.*$", "", V(g_simp)$name)
-) %>%
-  left_join(pathway_enrichment_top3cluster, by = c("clusterID" = "clusterID")) %>%
-  mutate(
-    cluster.x = factor(cluster.x, levels = seq(1:max(n_clusters_Fstat))),
-    label = ifelse(is.na(label), cluster.x, label),
-    size = degree(g_simp),
-    colour = ifelse(grepl("_", clusterID), "background", label)
-  )
-```
-
-
-```{r , fig.width=15, fig.height=10}
-pal <- c(
-  "1" = "#b68c47",
-  "2" = "#934ac0",
-  "3" = "#71b448",
-  "4" = "#af5179",
-  "5" = "#558965",
-  "6" = "#bb4b37",
-  "7" = "#6d7ab3",
-  "background" = "grey"
-)
-set.seed(2)
-p <- ggraph(g_simp, layout = "fr") +
-  geom_edge_link(colour = "grey") +
-  geom_node_point(aes(size = nodes$size, colour = nodes$colour)) +
-  geom_node_text(aes(label = nodes$label)) +
-  scale_colour_manual(values = pal) +
-  theme_graph() +
-  theme(legend.position = "none")
-p
-```
-
-
 ## Processes in detail 
 
 Analyze the processes identified by the cluster level analysis in detail.
@@ -553,17 +769,17 @@ for (i in list(
   c(DDR_members$gene_name, cc_members$gene_name)
 )) {
   
-  interesting_nodes <- F_stat_nodes %>%
+  interesting_nodes <- withTPP_nodes %>%
     filter(id %in% i)
 
-  interesting_edges <- F_stat_edges %>%
+  interesting_edges <- withTPP_edges %>%
     filter(from %in% interesting_nodes$id | to %in% interesting_nodes$id) %>% 
     mutate(color = ifelse(from %in% interesting_nodes$id & to %in% interesting_nodes$id, "grey", "grey")) %>% 
     distinct(from, to, .keep_all=T)
 
   occurences <- table(c(interesting_edges$from, interesting_edges$to))
 
-  interesting_nodes <- F_stat_nodes %>%
+  interesting_nodes <- withTPP_nodes %>%
     filter(id %in% unique(c(interesting_edges$from, interesting_edges$to))) %>%
     mutate(
       group = ifelse(model == "PKN node", "related", "pathway"),
@@ -714,38 +930,10 @@ pathway_enrichment_topcluster <- pathway_enrichment_unnest_noTPP %>%
 pathway_enrichment_topcluster %>% select(cluster, Description, qvalue)
 ```
 
-
-```{r , fig.width=15, fig.height=10}
-nodes <- data.frame(
-  clusterID = V(g_simp)$name,
-  cluster = gsub("_.*$", "", V(g_simp)$name)
-) %>%
-  left_join(pathway_enrichment_top3cluster, by = c("clusterID" = "clusterID")) %>%
-  mutate(
-    cluster.x = factor(cluster.x, levels = seq(1:max(n_clusters_noTPP))),
-    label = ifelse(is.na(label), cluster.x, label),
-    size = degree(g_simp),
-    colour = ifelse(grepl("_", clusterID), "background", label)
-  )
-```
-
-
-```{r , fig.width=15, fig.height=10}
-set.seed(2)
-p <- ggraph(g_simp, layout = "fr") +
-  geom_edge_link(colour = "grey") +
-  geom_node_point(aes(size = nodes$size, colour = nodes$colour)) +
-  geom_node_text(aes(label = nodes$label)) +
-  # scale_colour_manual(values = pal) +
-  theme_graph() +
-  theme(legend.position = "none")
-p
-```
-
 # Compare clusters
 
 ```{r}
-pathway_enrichment_topclusters_Fstat <- pathway_enrichment_unnest_Fstat %>%
+pathway_enrichment_topclusters_withTPP <- pathway_enrichment_unnest_withTPP %>%
   ungroup() %>%
   mutate(corr_p_value = -log10(p.adjust)) %>%
   group_by(cluster) %>%
@@ -759,9 +947,9 @@ pathway_enrichment_topclusters_noTPP <- pathway_enrichment_unnest_noTPP %>%
   dplyr::arrange(cluster, desc(corr_p_value), desc(Count)) %>%
   slice_head(n = 5)
 
-intersect(pathway_enrichment_topclusters_Fstat$Description, pathway_enrichment_topclusters_noTPP$Description)
+intersect(pathway_enrichment_topclusters_withTPP$Description, pathway_enrichment_topclusters_noTPP$Description)
 
-merged_clusters <- pathway_enrichment_topclusters_Fstat %>%
+merged_clusters <- pathway_enrichment_topclusters_withTPP %>%
   select(cluster, Description) %>%
   mutate(network = "with TPP") %>%
   bind_rows(pathway_enrichment_topclusters_noTPP %>%
@@ -801,7 +989,7 @@ p_venn1
 
 
 ```{r}
-merged_clusters_comparisons <- F_stat_nodes %>%
+merged_clusters_comparisons <- withTPP_nodes %>%
   select(node, cluster) %>%
   mutate(network = "with TPP") %>%
   bind_rows(noTPP_nodes %>% select(node, cluster) %>% mutate(network = "no TPP")) %>%

@@ -83,9 +83,8 @@ values_effect <- c(
 
 ```{r, message=F, warning=F}
 TPP2D_UWB <- read.table("data/2DTPP_UWB_Ola_2021-03-24.txt", row.names = 1, sep = "\t")
-phosphoproteomics <- read_tsv("data/LIMMA_results_PhosphoFollowUp_Phospho.txt")
 
-
+load("data/220531_limma_multiomics_forpaper.RData")
 load("data/KSN.RData")
 load("data/210802_limma_UWB1.289_initialdataset_correctedphospho.RData")
 load("data/220510_viper_footprints.RData")
@@ -311,25 +310,12 @@ p_pathway_UWB1.289_TPPFstatistic
 Assess changes on phosphoproteomic level and their impact on TPP proteins
 
 ```{r}
-psites <- phosphoproteomics %>%
-  mutate(
-    gene_name = mapIds(org.Hs.eg.db, representative, "SYMBOL", "UNIPROT"),
-    condition_long = paste(condition, comparison, sep = "_"),
-    UP = representative,
-    GeneSymbol = gene_name,
-    aa = str_extract(psite, "[[:upper:]]"),
-    pos = as.numeric(str_extract(psite, "\\d{1,4}")),
-    ID_cosmos = paste(GeneSymbol, "_", aa, pos, sep = ""),
-    ID_cosmos = gsub(",.+$", "", ID_cosmos))%>%
-  filter(!is.na(logFC) & !is.na(ID_cosmos)&comparison == "Ola") %>%
-  dplyr::mutate(
-    condition_long = stringr::str_replace(condition_long, "_Ola", "uM"),
-    condition_long = stringr::str_replace(condition_long, "BRCA_hom", "UWB1.289_BRCA1"),
-    condition_long = stringr::str_replace(condition_long, "BRCA_nul", "UWB1.289"),
-    condition_long = stringr::str_replace(condition_long, "04", "0.4")
-  ) %>% 
-  filter(condition_long == "UWB1.289_24h_4uM") %>% 
-  distinct(ID_cosmos, condition_long, .keep_all = T) %>% 
+psites <- phospho_ola %>% 
+  mutate(gene_name =  GeneSymbol,
+                                 aa = str_extract(psite, "[[:upper:]]"),
+                                 pos = as.numeric(str_extract(psite, "\\d{1,4}")),
+                                 ID_cosmos = paste(GeneSymbol, "_", aa, pos, sep = ""),
+                                 ID_cosmos = gsub(",.+$", "", ID_cosmos))%>% 
   dplyr::select(ID_cosmos, gene_name, logFC, t, condition_long, adj.P.Val)
 
 TPP_hits_phosphositelevel <- inner_join(TPPFstatistic_hits_adap, psites, by = "gene_name") %>%
@@ -345,7 +331,8 @@ volcano_affected_psites <- ggplot(TPP_hits_phosphositelevel,
   geom_point(aes(colour = significance))+
   geom_text_repel(label = TPP_hits_phosphositelevel$gene_name, size = 3, colour = "gray2") +
   scale_colour_manual(values = c("grey", "darkcyan")) +
-  theme_bw(base_size = 14)
+  theme_bw(base_size = 14) +
+  labs(title = "Phosphorylation on TPP proteins")
 volcano_affected_psites
 ```
 

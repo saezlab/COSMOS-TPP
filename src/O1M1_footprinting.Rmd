@@ -144,8 +144,8 @@ KSN_viper <- df_to_viper_regulon(KSN)
 ## Load gathered datasets.
 
 ```{r}
-load("data/210626_DEmultiomics_Olaparib_gathered_updated")
-### Corrected phosphodata
+load("data/220531_limma_multiomics_forpaper.RData")
+### Corrected phosphodata for kinase activity estimation
 load("data/210802_limma_UWB1.289_initialdataset_correctedphospho.RData")
 ```
 
@@ -314,6 +314,7 @@ pathway_enrichment_significant <- pathway_enrichment_unnest %>%
 
 pathway_enrichment_significant %>% filter(type == "trans") %>% select(Description, qvalue, geneID)
 pathway_enrichment_significant %>% filter(type == "phospho") %>% select(Description, qvalue, geneID)
+t
 ```
 
 
