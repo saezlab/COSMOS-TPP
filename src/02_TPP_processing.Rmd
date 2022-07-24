@@ -219,7 +219,7 @@ save(TPPFstatistic_hits, file = "results/211007_TPPfstathits_UWB24h.RData")
 Load the results to avoid recalculation
 
 ```{r}
-load("data/211007_TPPfstathits_UWB24h.RData")
+load("results/211007_TPPfstathits_UWB24h.RData")
 
 TPPFstatistic_hits_adap <- TPPFstatistic_hits %>%
   mutate(
