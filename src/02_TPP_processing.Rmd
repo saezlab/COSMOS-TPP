@@ -89,7 +89,8 @@ load("data/KSN.RData")
 load("data/210802_limma_UWB1.289_initialdataset_correctedphospho.RData")
 load("data/220510_viper_footprints.RData")
 
-
+load("data/KSN.RData")
+load("data/dorothea.RData")
 ```
 
 Aggregate and filter TPP UWB data to considered condition and quality criteria.
@@ -254,7 +255,7 @@ save(TPP_all_scores, file = "results/220530_TPPallscores.RData")
 ```
 
 
-# TPP hit evaluation Evaluation
+# TPP hit evaluation
 
 ## Pathways
 
@@ -335,6 +336,193 @@ volcano_affected_psites <- ggplot(TPP_hits_phosphositelevel,
   labs(title = "Phosphorylation on TPP proteins")
 volcano_affected_psites
 ```
+
+# Comparison with footprinting
+
+```{r}
+footprints_UWB_ola_hits <- bind_rows("phospho" = filter(viperRes_phospho_corrected, condition_long == "UWB1.289_24h_4uM" ) %>% top_n(n = 30, wt = absNES),
+                                      "trans" =filter(viperRes_trans, condition_long == "UWB1.289_24h_4uM" ) %>% top_n(n = 30, wt = absNES), 
+                                     .id = "omic") %>% 
+  mutate(mode = ifelse(NES > 0, "active", "inactive"), hit_call = "footprinting") %>% 
+  dplyr::select(gene_name = regulator, hit_call, mode, score = NES, type = omic)
+
+hit_comparisons <- bind_rows(footprints_UWB_ola_hits, TPPFstatistic_hits_adap) %>%
+  mutate(type = ifelse(is.na(type), "TPP", type)) %>%
+  dplyr::select(-representative) %>%
+  group_by(gene_name) %>%
+  mutate(n_scores = n())%>%
+  group_by(hit_call) %>%
+  mutate(n_proteins = n()) %>% 
+  ungroup()%>%   
+  filter(hit_call %in% c("footprinting", "TPPFstatistic")) %>% 
+  mutate(hit_call = gsub("TPPFstatistic", "TPP", hit_call), 
+        hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% dorothea$source_genesymbol), "TF", hit_call),
+         hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% KSN$enzyme_genesymbol), "Kinase", hit_call),
+        mode = ifelse(mode == "increased abundance", "stabilized", mode),
+        mode = ifelse(mode == "decreased abundance", "destabilized", mode),
+        mode = factor(mode, levels = c("stabilized","destabilized",  "active", "inactive")))
+```
+
+
+```{r fig.width=4.5, fig.height=2}
+values_paper <- c("Kinase" = "darkcyan", "TF" = "maroon4", "TPP" = "mediumseagreen")
+protein_order_small <- hit_comparisons %>%
+  dplyr::group_by(gene_name) %>% 
+  dplyr::mutate(n_scores = n()) %>% 
+  ungroup() %>%
+  dplyr::select(gene_name, n_scores) %>%
+  distinct(gene_name, .keep_all = T) %>%
+  arrange(-n_scores)
+
+p_comp <- hit_comparisons %>% 
+  ggplot(aes(y = hit_call,
+             x = factor(gene_name, levels = protein_order_small$gene_name))) +
+  geom_raster(aes(fill = hit_call, alpha = mode), 
+              colour = "white") +
+  scale_fill_manual(values = values_paper, name = "") +
+  scale_alpha_manual(values = c(1, 0.7, 1, 0.7), guide = F) +
+  #theme_bw(base_size = 18) +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x = element_blank(),  axis.ticks.x=element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position = "right")+
+  labs(x = "all proteins", y = "")
+p_comp
+```
+
+### DDR
+
+```{r}
+library(reactome.db)
+pathwaymembers <- toTable(reactomePATHID2EXTID) %>% 
+  mutate(gene_name = mapIds(org.Hs.eg.db, gene_id, 'SYMBOL', 'ENTREZID'))
+
+pathway_names <-  toTable(reactomePATHID2NAME) %>% 
+  filter(grepl("Homo sapiens", path_name))
+
+DDR <- pathway_names %>% 
+  filter(grepl("DNA Damage|DNA damage|DNA Repair|DNA repair|Checkpoint|Repair|Damage|repair|damage| Strand Breaks|DNA double-strand break|Homologous Recombination|Chk1/Chk2|DNA Double Strand Break|cell cycle|Cell Cycle|NIMA|APC|G2/|G1/|Mitotic|mitotic|Prometaphase|G2 Phase|G1 Phase|Prophase|cyclin|Cyclin", path_name))
+
+DDR_members <- pathwaymembers %>% 
+  filter(DB_ID %in% DDR$DB_ID) %>% 
+  distinct(gene_name)
+
+functional_coverage_TPP <- inner_join(DDR_members,hit_comparisons,  by = c("gene_name"))%>% 
+  mutate(hit_call = gsub("TPPFstatistic", "TPP", hit_call)) %>%
+  group_by(gene_name) %>%
+  mutate(n_scores = n()) 
+```
+
+
+```{r}
+functional_coverage_TPP <- inner_join(DDR_members,hit_comparisons,  by = c("gene_name"))%>% 
+  mutate(hit_call = gsub("TPPFstatistic", "TPP", hit_call), 
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% dorothea$source_genesymbol), "TF", hit_call),
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% KSN$enzyme_genesymbol), "Kinase", hit_call),
+         mode = factor(mode, levels = c("stabilized","destabilized",  "active", "inactive"))) %>% 
+  group_by(gene_name) %>%
+  mutate(n_scores = n()) 
+
+
+protein_order <-  functional_coverage_TPP %>%
+  dplyr::group_by(gene_name) %>% 
+  dplyr::mutate(n_scores = n()) %>% 
+  arrange(n_scores, hit_call) %>% 
+    distinct(gene_name)
+
+p_DNArepair <- functional_coverage_TPP%>% 
+  ggplot(aes(x = factor(gene_name, levels = protein_order$gene_name),
+             y = hit_call)) +
+  geom_raster(aes(fill=hit_call, alpha = mode))+
+  scale_fill_manual(values =values_paper) +
+  scale_alpha_manual(values = c(1, 0.7, 1, 0.7), guide = F) +
+  cowplot::theme_cowplot() +
+    theme(axis.text.x = element_blank(),axis.ticks.x =  element_blank(), legend.position = "right") +
+  labs(x = "proteins of DDR",
+       y= "") +
+  guides(fill = guide_legend(title = ""))
+p_DNArepair
+```
+
+### Phospho
+
+```{r}
+TPP_hits_phosphositelevel <- inner_join(hit_comparisons, psites, by = "gene_name") %>%
+  mutate(significance = ifelse(adj.P.Val < 0.05, "significant", "not significant"))
+```
+
+
+```{r}
+my_comparisons <- list( c("Kinase", "TPP"), c("TF", "TPP"))
+p <- TPP_hits_phosphositelevel %>% 
+   mutate(hit_call = gsub("TPPFstatistic", "TPP", hit_call), 
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% dorothea$source_genesymbol), "TF", hit_call),
+          hit_call = ifelse(hit_call == "footprinting" & (gene_name %in% KSN$enzyme_genesymbol), "Kinase", hit_call)) %>% 
+  ggplot(aes(hit_call, logFC)) +
+  geom_boxplot(aes(colour = hit_call), lwd =0.8) +
+  ggpubr::stat_compare_means(comparisons = my_comparisons, label.y = c(1.5, 1.3))+
+  scale_colour_manual(values = values_paper, guide = "none") +
+  cowplot::theme_cowplot() +
+  labs(x = "", y = "log2 fold-change \n phosphosite intensity")
+p
+
+```
+
+## CDK1 example
+
+
+```{r}
+kinases_downstream <- filter(KSN, enzyme_genesymbol %in% footprints_UWB_ola_hits$gene_name) %>%
+  mutate(substrates = str_extract(substrate_genesymbol, "^.*?(?=_)")) %>%
+  dplyr::select(enzyme_genesymbol, substrates, sign) %>%
+  distinct(enzyme_genesymbol, substrates, sign)
+
+TPP_kinase_downstream_overlap <- inner_join(hit_comparisons, kinases_downstream, by = c("gene_name" = "substrates")) %>%
+  group_by(hit_call, enzyme_genesymbol) %>%
+  mutate(n_enz = n()) %>%
+  group_by(hit_call, gene_name) %>%
+  mutate(n_TPP = n()) %>% 
+  filter(hit_call == "TPP")
+```
+
+
+```{r}
+kinase_example <- TPP_kinase_downstream_overlap %>% 
+  filter(enzyme_genesymbol == "CDK1") %>% 
+  ungroup() %>% 
+  dplyr::select(from = enzyme_genesymbol, to = gene_name, sign) %>% 
+  mutate(dashes = ifelse(sign == 1, FALSE, TRUE))%>% filter(to %in% c("WWTR1", "CDCA5", "CKAP2", "KIF11"))
+
+
+example_phospho <- TPP_hits_phosphositelevel %>% 
+  filter(gene_name %in% kinase_example$to) %>% 
+  dplyr::select(from = gene_name, to = ID_cosmos) %>% 
+  mutate(sign = 1, dashes = FALSE)
+
+kinase_example <- bind_rows(kinase_example,example_phospho) %>% 
+  mutate(color = "grey", length = ifelse(grepl("_", to), 10, 300))
+
+nodes <- data.frame(id = unique(c(kinase_example$from, kinase_example$to))) %>% 
+  mutate(group = ifelse(id == "CDK1", "Kinase", "TPP"),
+         group = ifelse(grepl("_", id), "phosphosite", group),
+         shape = ifelse(group == "phosphosite", "dot", "square"),
+         label = gsub("^.*_", "",id), 
+         level = ifelse(group == "kinase", 1, 2),
+         level = ifelse(group == "phosphosite", 3, level),
+         level = ifelse(id == "CDK1", 1, level))
+
+p_kinase_example = visNetwork(nodes,kinase_example, height = "800px", width = "100%") %>%
+    visGroups(groupname = "TPP", color = "mediumseagreen") %>%
+    visGroups(groupname = "Kinase", color = "darkcyan") %>%
+    visGroups(groupname = "phosphosite", color = "darkseagreen") %>%
+    visEdges(physics = F, width = 2) %>% 
+  visNodes(font = '30px Arial black', physics = F) %>% 
+  visHierarchicalLayout(levelSeparation = 300, nodeSpacing = 70)
+    # visLegend() %>%
+    # visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE)  %>%
+  #visNetwork::visIgraphLayout(layout =  "layout_with_fr")
+p_kinase_example
+```
+
 
 # TPP activities
 
