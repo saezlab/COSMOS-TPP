@@ -1,5 +1,5 @@
 ---
-title: "O1M2: TPP hit calling and scoring"
+title: "TPP hit calling and evaluation"
 output:
   html_document:
     keep_md: yes
@@ -363,6 +363,7 @@ hit_comparisons <- bind_rows(footprints_UWB_ola_hits, TPPFstatistic_hits_adap) %
         mode = factor(mode, levels = c("stabilized","destabilized",  "active", "inactive")))
 ```
 
+## Overlaps
 
 ```{r fig.width=4.5, fig.height=2}
 values_paper <- c("Kinase" = "darkcyan", "TF" = "maroon4", "TPP" = "mediumseagreen")
@@ -443,7 +444,7 @@ p_DNArepair <- functional_coverage_TPP%>%
 p_DNArepair
 ```
 
-### Phospho
+## Phospho
 
 ```{r}
 TPP_hits_phosphositelevel <- inner_join(hit_comparisons, psites, by = "gene_name") %>%
@@ -467,7 +468,7 @@ p
 
 ```
 
-## CDK1 example
+### CDK1 example
 
 
 ```{r}
