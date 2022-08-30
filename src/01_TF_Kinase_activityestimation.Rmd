@@ -310,11 +310,12 @@ pathway_enrichment_unnest <- pathway_enrichment %>%
   unnest()
 
 pathway_enrichment_significant <- pathway_enrichment_unnest %>%
-  filter(qvalue < 0.05)
+  filter(qvalue < 0.05)  %>% 
+  filter(Count >2)
 
 pathway_enrichment_significant %>% filter(type == "trans") %>% select(Description, qvalue, geneID)
 pathway_enrichment_significant %>% filter(type == "phospho") %>% select(Description, qvalue, geneID)
-t
+
 ```
 
 
