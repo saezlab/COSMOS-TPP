@@ -241,7 +241,7 @@ load("data/dorothea.RData")
 load("results/220512_cosmosinput_merged.RData")
 
 # to create universe for network level enrichment
-PKN_annotated <- read_tsv("data/GSK_Causal_Network_032021_Annotation.txt", show_col_types = FALSE)
+PKN_universe <- read_tsv("data/2207_PKN_universe.tsv")
 ```
 
 ## Viper results
@@ -470,7 +470,7 @@ noTPP_nodes <- nodes %>%
 
 ```{r, message=F, warning=F}
 # universe built from PKN
-pathways_universe <- data.frame(protein = unique(c(PKN_annotated$GeneA, PKN_annotated$GeneB)), NES = 1)
+pathways_universe <- data.frame(protein = PKN_universe$Node, NES = 1)
 
 # get gathered pathway input
 pathway_input_gathered <- map_dfr(result_list, 'nodes', .id = "networkID") %>% 
@@ -703,7 +703,7 @@ p
 
 ```{r}
 # PKN as universe
-universe <- unique(c(PKN_annotated$GeneA, PKN_annotated$GeneB))
+universe <- PKN_universe$Node
 
 pathwayenrichment_cluster <- withTPP_nodes %>%
   group_by(cluster) %>%
@@ -875,7 +875,7 @@ Check how clusters of noTPP networks compare to the insights in networks with TP
 
 ```{r}
 # PKN as universe
-universe <- unique(c(PKN_annotated$GeneA, PKN_annotated$GeneB))
+universe <-PKN_universe$Node
 
 pathwayenrichment_cluster <- noTPP_nodes %>%
   group_by(cluster) %>%
