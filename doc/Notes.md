@@ -26,4 +26,4 @@
 
 ## Scripts
 
-![](code_ecosystem.JPEG)
+![](code_ecosystem.JPG)
