@@ -245,6 +245,14 @@ ggplot(TPPFstatistic_hits_adap, aes(x= mode, fill=mode)) +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
 ```
+```{r}
+ggplot(TPPFstatistic_hits_adap %>% 
+         filter(gene_name != "AVD"), 
+       aes(x = mode, y = abs(score), colour = mode)) +
+  geom_boxplot() +
+  scale_colour_manual(values = values_effect) +
+  theme_cowplot()
+```
 
 
 ## Save
