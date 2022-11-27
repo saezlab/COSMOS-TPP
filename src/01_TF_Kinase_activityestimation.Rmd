@@ -149,6 +149,21 @@ load("data/220531_limma_multiomics_forpaper.RData")
 load("data/210802_limma_UWB1.289_initialdataset_correctedphospho.RData")
 ```
 
+```{r}
+ggplot(bind_rows("phosphoproteomics" = phospho_ola,
+                 "transcriptomics" = transcriptomics_ola %>%  mutate(EntrezID = as.character(EntrezID)) %>%  filter(-log10(adj.P.Val) < 20),
+                 .id = "dataset") %>% 
+         mutate(hit = ifelse(adj.P.Val < 0.05 & (logFC > log2(1.2) | logFC < log2(1 / 1.2)), "hit", "no hit")) %>% 
+         filter(!is.na(hit)),
+       aes(x = logFC, y = -log10(adj.P.Val), colour = hit)) +
+  geom_point() +
+  theme_cowplot() +
+  scale_color_manual(values = c("darkred", "grey30")) +
+  facet_wrap(~dataset, scales = "free") +
+  labs(x = "log2(fold-change)")
+```
+
+
 # Perform footprinting
 
 ## Transcriptomics
