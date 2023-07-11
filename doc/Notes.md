@@ -4,7 +4,7 @@
 
 - manuscript and related things collected here: https://docs.google.com/document/d/1WOR2ZgmqIc6V33ewTY4fMv6B9oPlku0soLehotvx2nM/edit#heading=h.eu7un576ybac
 
-## Datasets (data folder)
+## Datasets ([*data/*](data/)  folder)
 
 -   TPP: 2DTPP_UWB_Ola_2021-03-24.txt
 
@@ -12,7 +12,7 @@
 
 ## Data objects (data and results folder)
 
--   viper results: 220510_viper_footprints.RData
+-   Viper results: 220510_viper_footprints.RData
 
 -   Multi-omics dataset: 220531_limma_multiomics_forpaper.RData (temp), 210802_limma_UWB1.289_initialdataset_correctedphospho.RData
 
@@ -27,3 +27,9 @@
 ## Scripts
 
 ![](code_ecosystem.jpg)
+
+---
+
+- in [*src/01_TF_Kinase_activityestimation.Rmd*](src/01_TF_Kinase_activityestimation.Rmd) we estimate the activity of kinases, phosphatases and transcription factors based on transcriptomics and phosphoproteomics data
+
+- in [*src/02_TPP_processing.Rmd*](doc/Notes.md) we perform TPP hit calling and investigate the retrieved hits
