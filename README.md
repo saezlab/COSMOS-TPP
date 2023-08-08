@@ -1,6 +1,6 @@
 # COSMOS-TPP_paper
 
-## Repository to summarise Master Thesis for paper
+## Repository to summarise COSMOS-TPP work
 
 All analyses in this repository start from differential expression results of (phospho)proteomics and transcriptomics experiments, as well as TPP intensities for the generated 2D-TPP data. **Detailed information for all datasets and scripts is provided here: [*doc/Notes.md*](doc/Notes.md).**
 
